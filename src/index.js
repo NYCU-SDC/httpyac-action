@@ -4,6 +4,16 @@ const fs = require('fs').promises;
 const path = require('path');
 const { program } = require('commander');
 const { findJourneysYaml, parseJourneyYaml, runHttpYacTest } = require('./executor');
+const { loadReports, buildMarkdownSummary, writeSummary } = require('./reporter');
+
+async function setActionOutput(key, value) {
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (!outputPath) {
+    return;
+  }
+
+  await fs.appendFile(outputPath, `${key}=${value}\n`, 'utf8');
+}
 
 
 async function main(options) {
@@ -26,6 +36,8 @@ async function main(options) {
 
   if (journeys.length === 0) {
     console.log('   No user journeys found');
+    await setActionOutput('results-dir', outputDir);
+    await setActionOutput('journey-count', 0);
     return;
   } 
   console.log(`   Found ${journeys.length} user journey(s)`);
@@ -61,6 +73,22 @@ async function main(options) {
   console.log(`   Total Journeys: ${results.length}`);
   console.log(`   Successful: ${results.filter(r => r.success).length}`);
   console.log(`   Failed: ${results.filter(r => !r.success).length}`);
+
+  await setActionOutput('results-dir', outputDir);
+  await setActionOutput('journey-count', journeys.length);
+
+  console.log('\nhttpYac Reporter - Phase 2: Markdown Summary');
+  const reports = await loadReports(outputDir);
+
+  if (reports.length === 0) {
+    console.log('   No JSON reports found to summarize');
+    return;
+  }
+
+  const markdown = buildMarkdownSummary(reports);
+  const summaryPath = await writeSummary(markdown, outputDir);
+
+  console.log(`   Summary generated: ${summaryPath}`);
 }
 
 program
