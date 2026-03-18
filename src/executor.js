@@ -2,9 +2,8 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const { execSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const yaml = require('yaml');
-const { program } = require('commander');
 
 async function findJourneysYaml(baseDir) {
   const journeys = [];
@@ -60,7 +59,7 @@ async function parseJourneyYaml(filepath) {
   }
 }
 
-async function runHttpYacTest(journeyPath, config, outputPath) {  
+async function runHttpYacTest(journeyPath, config, outputPath, env) {  
   console.log(`\nTesting: ${config.name}`);
   console.log(`   Description: ${config.description}`);
   console.log(`   Entry: ${config.entry}`);
@@ -68,16 +67,28 @@ async function runHttpYacTest(journeyPath, config, outputPath) {
   
   try {    
     const absoluteOutputPath = path.isAbsolute(outputPath) ? outputPath : path.resolve(outputPath);
-    
-    const command = `httpyac send "${config.entry}" --name "${config.testcase}" --json > "${absoluteOutputPath}" 2>&1`;
-        
-    execSync(command, {
+
+    const args = ['send', config.entry];
+    for (const [key, value] of Object.entries(env || {})) {
+      args.push('--var', `${key}=${value}`);
+    }
+    args.push('--name', config.testcase, '--json');
+
+    const result = spawnSync('httpyac', args, {
       cwd: journeyPath,
-      encoding: 'utf8',
-      shell: '/bin/bash'
+      encoding: 'utf8'
     });
-    
-    const stats = await fs.stat(absoluteOutputPath);
+
+    const combinedOutput = `${result.stdout || ''}${result.stderr || ''}`;
+    await fs.writeFile(absoluteOutputPath, combinedOutput, 'utf8');
+
+    if (result.error) {
+      throw result.error;
+    }
+
+    if (result.status !== 0) {
+      throw new Error(`httpyac exited with code ${result.status}`);
+    }
     
     return {
       success: true,

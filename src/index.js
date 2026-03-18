@@ -15,9 +15,47 @@ async function setActionOutput(key, value) {
   await fs.appendFile(outputPath, `${key}=${value}\n`, 'utf8');
 }
 
+function parseEnvInput(envInput) {
+  const parsedEnv = {};
+
+  if (!envInput) {
+    return parsedEnv;
+  }
+
+  const lines = envInput.split(/\r?\n/);
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+
+    const separatorIndex = line.indexOf('=');
+    if (separatorIndex <= 0) {
+      console.warn(`   Skipping invalid env line: ${rawLine}`);
+      continue;
+    }
+
+    const key = line.slice(0, separatorIndex).trim();
+    const value = rawLine.slice(rawLine.indexOf('=') + 1);
+
+    if (!key) {
+      console.warn(`   Skipping env line with empty key: ${rawLine}`);
+      continue;
+    }
+
+    parsedEnv[key] = value;
+  }
+
+  return parsedEnv;
+}
 
 async function main(options) {
   const { scenariosPath, outputDir } = options;
+  
+  const rawEnv = process.env.HTTPYAC_ENV;
+  const env = parseEnvInput(rawEnv);
   
   console.log('httpYac Reporter - Phase 1: Test Execution');
   console.log(`   Scenarios Path: ${scenariosPath}`);
@@ -52,7 +90,7 @@ async function main(options) {
       const outputFileName = `${journey.name}.json`;
       const outputPath = path.join(outputDir, outputFileName);
       
-      const result = await runHttpYacTest(journey.path, config, outputPath);
+      const result = await runHttpYacTest(journey.path, config, outputPath, customEnv);
       
       results.push({
         journey: journey.name,

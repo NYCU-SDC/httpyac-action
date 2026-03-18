@@ -19,6 +19,12 @@ inputs:
     description: 'Version of httpYac CLI to use'
     required: false
     default: 'latest'
+  env:
+    description: 'Environment variables to pass to httpYac tests'
+    required: true
+    default: |
+      BASE_URL=http://127.0.0.1:4010/api
+      LOGIN_USER_ID=00000000-0000-0000-0000-000000000001
 
 outputs:
   results-dir:
@@ -54,6 +60,8 @@ runs:
     - name: Run httpYac Tests
       id: run-tests
       shell: bash
+      env: 
+        HTTPYAC_ENV: ${{ inputs.env }}
       run: |
         node ${{ github.action_path }}/dist/index.js \
           --scenarios-path "${{ inputs.scenarios-path }}" \
