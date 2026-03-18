@@ -1,19 +1,10 @@
 #!/usr/bin/env node
 
+const core = require('@actions/core');
 const fs = require('fs').promises;
 const path = require('path');
-const { program } = require('commander');
 const { findJourneysYaml, parseJourneyYaml, runHttpYacTest } = require('./executor');
 const { loadReports, buildMarkdownSummary, writeSummary } = require('./reporter');
-
-async function setActionOutput(key, value) {
-  const outputPath = process.env.GITHUB_OUTPUT;
-  if (!outputPath) {
-    return;
-  }
-
-  await fs.appendFile(outputPath, `${key}=${value}\n`, 'utf8');
-}
 
 function parseEnvInput(envInput) {
   const parsedEnv = {};
@@ -51,15 +42,23 @@ function parseEnvInput(envInput) {
   return parsedEnv;
 }
 
-async function main(options) {
-  const { scenariosPath, outputDir } = options;
+function getInputOrDefault(name, fallback) {
+  const value = core.getInput(name, { required: false });
+  return value ? value : fallback;
+}
+
+async function main() {
+  const scenariosPath = getInputOrDefault('scenarios-path', './scenarios/user-journey');
+  const outputDir = getInputOrDefault('output-dir', './httpyac-results');
+  const rawEnv = getInputOrDefault('env', '');
+  const httpyacVersion = getInputOrDefault('httpyac-version', 'latest');
+
+  const customEnv = parseEnvInput(rawEnv);
   
-  const rawEnv = process.env.HTTPYAC_ENV;
-  const env = parseEnvInput(rawEnv);
-  
-  console.log('httpYac Reporter - Phase 1: Test Execution');
+  console.log('httpYac Action - Phase 1: Test Execution');
   console.log(`   Scenarios Path: ${scenariosPath}`);
   console.log(`   Output Directory: ${outputDir}`);
+  console.log(`   httpYac Version: ${httpyacVersion}`);
   
   // Create output directory if it doesn't exist
   await fs.mkdir(outputDir, { recursive: true });
@@ -74,8 +73,8 @@ async function main(options) {
 
   if (journeys.length === 0) {
     console.log('   No user journeys found');
-    await setActionOutput('results-dir', outputDir);
-    await setActionOutput('journey-count', 0);
+    core.setOutput('results-dir', outputDir);
+    core.setOutput('journey-count', 0);
     return;
   } 
   console.log(`   Found ${journeys.length} user journey(s)`);
@@ -90,7 +89,7 @@ async function main(options) {
       const outputFileName = `${journey.name}.json`;
       const outputPath = path.join(outputDir, outputFileName);
       
-      const result = await runHttpYacTest(journey.path, config, outputPath, customEnv);
+      const result = await runHttpYacTest(journey.path, config, outputPath, customEnv, httpyacVersion);
       
       results.push({
         journey: journey.name,
@@ -112,10 +111,10 @@ async function main(options) {
   console.log(`   Successful: ${results.filter(r => r.success).length}`);
   console.log(`   Failed: ${results.filter(r => !r.success).length}`);
 
-  await setActionOutput('results-dir', outputDir);
-  await setActionOutput('journey-count', journeys.length);
+  core.setOutput('results-dir', outputDir);
+  core.setOutput('journey-count', journeys.length);
 
-  console.log('\nhttpYac Reporter - Phase 2: Markdown Summary');
+  console.log('\nhttpYac Action - Phase 2: Markdown Summary');
   const reports = await loadReports(outputDir);
 
   if (reports.length === 0) {
@@ -128,16 +127,7 @@ async function main(options) {
 
   console.log(`   Summary generated: ${summaryPath}`);
 }
-
-program
-  .option('--scenarios-path <path>', 'Path to scenarios directory', './scenarios/user-journey')
-  .option('--output-dir <path>', 'Output directory for JSON files', './httpyac-results')
-  .parse(process.argv);
-
-const options = program.opts();
-
-main(options).catch(err => {
-  console.error(`\nFatal error: ${err.message}`);
+main().catch(err => {
+  core.setFailed(err.message);
   console.error(err.stack);
-  process.exit(1);
 });

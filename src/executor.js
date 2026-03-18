@@ -59,7 +59,7 @@ async function parseJourneyYaml(filepath) {
   }
 }
 
-async function runHttpYacTest(journeyPath, config, outputPath, env) {  
+async function runHttpYacTest(journeyPath, config, outputPath, env, httpyacVersion = 'latest') {  
   console.log(`\nTesting: ${config.name}`);
   console.log(`   Description: ${config.description}`);
   console.log(`   Entry: ${config.entry}`);
@@ -68,13 +68,13 @@ async function runHttpYacTest(journeyPath, config, outputPath, env) {
   try {    
     const absoluteOutputPath = path.isAbsolute(outputPath) ? outputPath : path.resolve(outputPath);
 
-    const args = ['send', config.entry];
+    const args = ['--yes', `httpyac@${httpyacVersion}`, 'send', config.entry];
     for (const [key, value] of Object.entries(env || {})) {
       args.push('--var', `${key}=${value}`);
     }
     args.push('--name', config.testcase, '--json');
 
-    const result = spawnSync('httpyac', args, {
+    const result = spawnSync('npx', args, {
       cwd: journeyPath,
       encoding: 'utf8'
     });

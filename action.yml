@@ -1,4 +1,4 @@
-name: 'httpYac Reporter'
+name: 'httpYac Action'
 description: 'Execute httpYac CLI tests for user journeys and generate JSON reports'
 author: 'pylin'
 
@@ -29,40 +29,9 @@ inputs:
 outputs:
   results-dir:
     description: 'Directory containing the generated JSON result files'
-    value: ${{ steps.run-tests.outputs.results-dir }}
   journey-count:
     description: 'Number of user journeys tested'
-    value: ${{ steps.run-tests.outputs.journey-count }}
 
 runs:
-  using: 'composite'
-  steps:
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-    
-    - name: Install httpYac CLI
-      shell: bash
-      run: |
-        if [ "${{ inputs.httpyac-version }}" = "latest" ]; then
-          npm install -g httpyac
-        else
-          npm install -g httpyac@${{ inputs.httpyac-version }}
-        fi
-    
-    - name: Install Action Dependencies
-      shell: bash
-      run: |
-        cd ${{ github.action_path }}
-        npm install --production
-    
-    - name: Run httpYac Tests
-      id: run-tests
-      shell: bash
-      env: 
-        HTTPYAC_ENV: ${{ inputs.env }}
-      run: |
-        node ${{ github.action_path }}/dist/index.js \
-          --scenarios-path "${{ inputs.scenarios-path }}" \
-          --output-dir "${{ inputs.output-dir }}"
+  using: 'node20'
+  main: 'dist/index.js'
