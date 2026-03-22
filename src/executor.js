@@ -72,7 +72,7 @@ async function runHttpYacTest(journeyPath, config, outputPath, env, httpyacVersi
     for (const [key, value] of Object.entries(env || {})) {
       args.push('--var', `${key}=${value}`);
     }
-    args.push('--name', config.testcase, '--json --output none --output-failed exchange');
+    args.push('--name', config.testcase, '--json', '--output', 'none', '--output-failed', 'exchange');
 
     const result = spawnSync('npx', args, {
       cwd: journeyPath,
