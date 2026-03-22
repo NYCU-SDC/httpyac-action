@@ -25724,11 +25724,28 @@ async function runHttpYacTest(journeyPath, config, outputPath, env, httpyacVersi
 
     const result = spawnSync('npx', args, {
       cwd: journeyPath,
-      encoding: 'utf8'
+      encoding: 'utf8',
+      maxBuffer: 5 * 1024 * 1024
     });
 
-    const combinedOutput = `${result.stdout || ''}${result.stderr || ''}`;
-    await fs.writeFile(absoluteOutputPath, combinedOutput, 'utf8');
+    let testData = null;
+    try {
+      if (result.stdout) {
+        testData = JSON.parse(result.stdout);
+      }
+    } catch (parseErr) {
+      console.warn(`   Warning: Could not parse httpyac output as JSON.`);
+      testData = { rawOutput: result.stdout };
+    }
+
+    const finalReport = {
+      journey: config,
+      testResult: testData,
+      stderr: result.stderr,
+      timestamp: new Date().toISOString()
+    };
+
+    await fs.writeFile(absoluteOutputPath, JSON.stringify(finalReport, null, 2), 'utf8');
 
     if (result.error) {
       throw result.error;
@@ -26037,6 +26054,11 @@ function buildReportSection(report, reportIndex) {
 
   sectionLines.push(`## <a id="${reportAnchor}" href="#${reportAnchor}">${report.displayName}</a>`);
 
+  if (report.description) {
+    sectionLines.push(`> ${report.description}`);
+    sectionLines.push('');
+  }
+
   if (allPassed) {
     sectionLines.push('<details>');
     sectionLines.push(`  <summary>All ${report.total} tests passed</summary>`);
@@ -26101,15 +26123,20 @@ async function loadReports(outputDir) {
     try {
       const content = await fs.readFile(jsonPath, 'utf8');
       const parsed = JSON.parse(content);
-      const requests = Array.isArray(parsed.requests) ? parsed.requests : [];
 
-      const normalizedSummary = normalizeSummary(parsed.summary)
+      const journey = parsed.journey || {};
+      const testData = parsed.testResult || parsed;
+      
+      const requests = Array.isArray(testData.requests) ? testData.requests : [];
+      const normalizedSummary = normalizeSummary(testData.summary);
 
-      const displayName = path.basename(jsonPath);
+      const displayName = journey.name || path.basename(jsonPath);
+      const description = journey.description || '';
 
       reports.push({
         path: jsonPath,
         displayName,
+        description,
         requests,
         ...normalizedSummary,
         duration: getTotalDuration(requests),
@@ -26119,6 +26146,7 @@ async function loadReports(outputDir) {
       reports.push({
         path: jsonPath,
         displayName: `${path.basename(jsonPath)} (invalid JSON)`,
+        description: '',
         requests: [],
         passed: 0,
         failed: 1,
