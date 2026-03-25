@@ -86,16 +86,22 @@ async function main() {
     try {
       const config = await parseJourneyYaml(journey.yamlPath);
       
-      const outputFileName = `${journey.name}.json`;
-      const outputPath = path.join(outputDir, outputFileName);
-      
-      const result = await runHttpYacTest(journey.path, config, outputPath, customEnv, httpyacVersion);
-      
-      results.push({
-        journey: journey.name,
-        config: config,
-        ...result
-      });
+      let caseIndex = 0;
+      for (const testCase of config.cases) {
+        caseIndex++;
+        const safeCaseName = (testCase.name || `case-${caseIndex}`).replace(/[^a-z0-9]/gi, '-').toLowerCase();
+        const outputFileName = `${journey.name}-${safeCaseName}.json`;
+        const outputPath = path.join(outputDir, outputFileName);
+        
+        const result = await runHttpYacTest(journey.path, config, testCase, outputPath, customEnv, httpyacVersion);
+        
+        results.push({
+          journey: journey.name,
+          case: testCase.name,
+          config: config,
+          ...result
+        });
+      }
     } catch (err) {
       console.error(`\nError processing journey '${journey.name}': ${err.message}`);
       results.push({

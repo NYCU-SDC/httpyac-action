@@ -25691,15 +25691,14 @@ async function parseJourneyYaml(filepath) {
     const content = await fs.readFile(filepath, 'utf8');
     const config = yaml.parse(content);
     
-    if (!config.entry || !config.testcase) {
-      throw new Error(`Invalid journey.yaml: missing 'entry' or 'testcase' field`);
+    if (!config.cases || !Array.isArray(config.cases)) {
+      throw new Error(`Invalid journey.yaml: missing 'cases' array`);
     }
     
     return {
       name: config.name || 'Unnamed Journey',
       description: config.description || '',
-      entry: config.entry,
-      testcase: config.testcase
+      cases: config.cases
     };
   } catch (err) {
     console.error(`Error parsing ${filepath}: ${err.message}`);
@@ -25707,20 +25706,20 @@ async function parseJourneyYaml(filepath) {
   }
 }
 
-async function runHttpYacTest(journeyPath, config, outputPath, env, httpyacVersion = 'latest') {  
-  console.log(`\nTesting: ${config.name}`);
-  console.log(`   Description: ${config.description}`);
-  console.log(`   Entry: ${config.entry}`);
-  console.log(`   Testcase: ${config.testcase}`);
+async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, httpyacVersion = 'latest') {  
+  console.log(`\nTesting: ${config.name} - ${testCase.name}`);
+  console.log(`   Description: ${testCase.description || ''}`);
+  console.log(`   Path: ${testCase.path}`);
+  console.log(`   Test: ${testCase.test}`);
   
   try {    
     const absoluteOutputPath = path.isAbsolute(outputPath) ? outputPath : path.resolve(outputPath);
 
-    const args = ['--yes', `httpyac@${httpyacVersion}`, 'send', config.entry];
+    const args = ['--yes', `httpyac@${httpyacVersion}`, 'send', testCase.path];
     for (const [key, value] of Object.entries(env || {})) {
       args.push('--var', `${key}=${value}`);
     }
-    args.push('--name', config.testcase, '--json', '--output', 'none', '--output-failed', 'exchange');
+    args.push('--name', testCase.test, '--json', '--output', 'none', '--output-failed', 'exchange');
 
     const result = spawnSync('npx', args, {
       cwd: journeyPath,
@@ -25739,7 +25738,11 @@ async function runHttpYacTest(journeyPath, config, outputPath, env, httpyacVersi
     }
 
     const finalReport = {
-      journey: config,
+      journeyTitle: config.name || '',
+      journey: {
+        name: `${testCase.name}`,
+        description: testCase.description || ''
+      },
       testResult: testData,
       stderr: result.stderr,
       timestamp: new Date().toISOString()
@@ -25993,7 +25996,7 @@ function buildRequestFailureDetails(request, reportIndex, requestIndex, requestN
   const statusMessage = response.statusMessage || '';
 
   const lines = [];
-  lines.push(`### <a id="${anchorId}" href="#${anchorId}">${requestName}</a>`);
+  lines.push(`#### <a id="${anchorId}" href="#${anchorId}">${requestName}</a>`);
   lines.push('');
   lines.push('**Request Information**');
   lines.push(`</br>${method} ${requestUrl}`);
@@ -26052,7 +26055,9 @@ function buildReportSection(report, reportIndex) {
   const reportAnchor = `user-content-r${reportIndex}`;
   const allPassed = report.total > 0 && report.passed === report.total;
 
-  sectionLines.push(`## <a id="${reportAnchor}" href="#${reportAnchor}">${report.displayName}</a>`);
+  sectionLines.push(`## ${report.journeyTitle}`);
+
+  sectionLines.push(`### <a id="${reportAnchor}" href="#${reportAnchor}">${report.displayName}</a>`);
 
   if (report.description) {
     sectionLines.push(`> ${report.description}`);
@@ -26098,14 +26103,28 @@ function buildOverviewSection(reports, globalTotals) {
   const lines = [];
   lines.push(`## Overview`);
   lines.push(`![${badgeStyle.alt}](https://img.shields.io/badge/tests-${badgeText}-${badgeStyle.badge})`);
-  lines.push('|Report|Passed|Failed|Skipped|Pass %|Time|');
-  lines.push('|:---|---:|---:|---:|---:|---:|');
 
+  const groups = {};
   reports.forEach((report, index) => {
-    lines.push(
-      `|[${report.displayName}](#user-content-r${index})|${report.passed}|${report.failed}|${report.skipped}|${report.passPercent}|${report.duration}|`
-    );
+    const title = report.journeyTitle || 'Other';
+    if (!groups[title]) {
+      groups[title] = [];
+    }
+    groups[title].push({ report, index });
   });
+
+  for (const [title, groupReports] of Object.entries(groups)) {
+    lines.push('');
+    lines.push(`**${title}**`);
+    lines.push('|Test Case|Passed|Failed|Skipped|Pass %|Time|');
+    lines.push('|:---|---:|---:|---:|---:|---:|');
+
+    groupReports.forEach(({ report, index }) => {
+      lines.push(
+        `|[${report.displayName}](#user-content-r${index})|${report.passed}|${report.failed}|${report.skipped}|${report.passPercent}|${report.duration}|`
+      );
+    });
+  }
 
   return lines.join('\n');
 }
@@ -26132,9 +26151,11 @@ async function loadReports(outputDir) {
 
       const displayName = journey.name || path.basename(jsonPath);
       const description = journey.description || '';
+      const journeyTitle = parsed.journeyTitle || 'Unnamed Journey';
 
       reports.push({
         path: jsonPath,
+        journeyTitle,
         displayName,
         description,
         requests,
@@ -36816,16 +36837,22 @@ async function main() {
     try {
       const config = await parseJourneyYaml(journey.yamlPath);
       
-      const outputFileName = `${journey.name}.json`;
-      const outputPath = path.join(outputDir, outputFileName);
-      
-      const result = await runHttpYacTest(journey.path, config, outputPath, customEnv, httpyacVersion);
-      
-      results.push({
-        journey: journey.name,
-        config: config,
-        ...result
-      });
+      let caseIndex = 0;
+      for (const testCase of config.cases) {
+        caseIndex++;
+        const safeCaseName = (testCase.name || `case-${caseIndex}`).replace(/[^a-z0-9]/gi, '-').toLowerCase();
+        const outputFileName = `${journey.name}-${safeCaseName}.json`;
+        const outputPath = path.join(outputDir, outputFileName);
+        
+        const result = await runHttpYacTest(journey.path, config, testCase, outputPath, customEnv, httpyacVersion);
+        
+        results.push({
+          journey: journey.name,
+          case: testCase.name,
+          config: config,
+          ...result
+        });
+      }
     } catch (err) {
       console.error(`\nError processing journey '${journey.name}': ${err.message}`);
       results.push({

@@ -43,15 +43,14 @@ async function parseJourneyYaml(filepath) {
     const content = await fs.readFile(filepath, 'utf8');
     const config = yaml.parse(content);
     
-    if (!config.entry || !config.testcase) {
-      throw new Error(`Invalid journey.yaml: missing 'entry' or 'testcase' field`);
+    if (!config.cases || !Array.isArray(config.cases)) {
+      throw new Error(`Invalid journey.yaml: missing 'cases' array`);
     }
     
     return {
       name: config.name || 'Unnamed Journey',
       description: config.description || '',
-      entry: config.entry,
-      testcase: config.testcase
+      cases: config.cases
     };
   } catch (err) {
     console.error(`Error parsing ${filepath}: ${err.message}`);
@@ -59,20 +58,20 @@ async function parseJourneyYaml(filepath) {
   }
 }
 
-async function runHttpYacTest(journeyPath, config, outputPath, env, httpyacVersion = 'latest') {  
-  console.log(`\nTesting: ${config.name}`);
-  console.log(`   Description: ${config.description}`);
-  console.log(`   Entry: ${config.entry}`);
-  console.log(`   Testcase: ${config.testcase}`);
+async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, httpyacVersion = 'latest') {  
+  console.log(`\nTesting: ${config.name} - ${testCase.name}`);
+  console.log(`   Description: ${testCase.description || ''}`);
+  console.log(`   Path: ${testCase.path}`);
+  console.log(`   Test: ${testCase.test}`);
   
   try {    
     const absoluteOutputPath = path.isAbsolute(outputPath) ? outputPath : path.resolve(outputPath);
 
-    const args = ['--yes', `httpyac@${httpyacVersion}`, 'send', config.entry];
+    const args = ['--yes', `httpyac@${httpyacVersion}`, 'send', testCase.path];
     for (const [key, value] of Object.entries(env || {})) {
       args.push('--var', `${key}=${value}`);
     }
-    args.push('--name', config.testcase, '--json', '--output', 'none', '--output-failed', 'exchange');
+    args.push('--name', testCase.test, '--json', '--output', 'none', '--output-failed', 'exchange');
 
     const result = spawnSync('npx', args, {
       cwd: journeyPath,
@@ -91,7 +90,11 @@ async function runHttpYacTest(journeyPath, config, outputPath, env, httpyacVersi
     }
 
     const finalReport = {
-      journey: config,
+      journeyTitle: config.name || '',
+      journey: {
+        name: `${testCase.name}`,
+        description: testCase.description || ''
+      },
       testResult: testData,
       stderr: result.stderr,
       timestamp: new Date().toISOString()

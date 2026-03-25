@@ -210,7 +210,7 @@ function buildRequestFailureDetails(request, reportIndex, requestIndex, requestN
   const statusMessage = response.statusMessage || '';
 
   const lines = [];
-  lines.push(`### <a id="${anchorId}" href="#${anchorId}">${requestName}</a>`);
+  lines.push(`#### <a id="${anchorId}" href="#${anchorId}">${requestName}</a>`);
   lines.push('');
   lines.push('**Request Information**');
   lines.push(`</br>${method} ${requestUrl}`);
@@ -269,7 +269,9 @@ function buildReportSection(report, reportIndex) {
   const reportAnchor = `user-content-r${reportIndex}`;
   const allPassed = report.total > 0 && report.passed === report.total;
 
-  sectionLines.push(`## <a id="${reportAnchor}" href="#${reportAnchor}">${report.displayName}</a>`);
+  sectionLines.push(`## ${report.journeyTitle}`);
+
+  sectionLines.push(`### <a id="${reportAnchor}" href="#${reportAnchor}">${report.displayName}</a>`);
 
   if (report.description) {
     sectionLines.push(`> ${report.description}`);
@@ -315,14 +317,28 @@ function buildOverviewSection(reports, globalTotals) {
   const lines = [];
   lines.push(`## Overview`);
   lines.push(`![${badgeStyle.alt}](https://img.shields.io/badge/tests-${badgeText}-${badgeStyle.badge})`);
-  lines.push('|Report|Passed|Failed|Skipped|Pass %|Time|');
-  lines.push('|:---|---:|---:|---:|---:|---:|');
 
+  const groups = {};
   reports.forEach((report, index) => {
-    lines.push(
-      `|[${report.displayName}](#user-content-r${index})|${report.passed}|${report.failed}|${report.skipped}|${report.passPercent}|${report.duration}|`
-    );
+    const title = report.journeyTitle || 'Other';
+    if (!groups[title]) {
+      groups[title] = [];
+    }
+    groups[title].push({ report, index });
   });
+
+  for (const [title, groupReports] of Object.entries(groups)) {
+    lines.push('');
+    lines.push(`**${title}**`);
+    lines.push('|Test Case|Passed|Failed|Skipped|Pass %|Time|');
+    lines.push('|:---|---:|---:|---:|---:|---:|');
+
+    groupReports.forEach(({ report, index }) => {
+      lines.push(
+        `|[${report.displayName}](#user-content-r${index})|${report.passed}|${report.failed}|${report.skipped}|${report.passPercent}|${report.duration}|`
+      );
+    });
+  }
 
   return lines.join('\n');
 }
@@ -349,9 +365,11 @@ async function loadReports(outputDir) {
 
       const displayName = journey.name || path.basename(jsonPath);
       const description = journey.description || '';
+      const journeyTitle = parsed.journeyTitle || 'Unnamed Journey';
 
       reports.push({
         path: jsonPath,
+        journeyTitle,
         displayName,
         description,
         requests,
