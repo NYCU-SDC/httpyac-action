@@ -56,11 +56,6 @@ async function main() {
   const customEnv = parseEnvInput(rawEnv);
   
   console.log('httpYac Action - Phase 1: Test Execution');
-  console.log(`   Scenarios Path: ${scenariosPath}`);
-  console.log(`   Output Directory: ${outputDir}`);
-  console.log(`   httpYac Version: ${httpyacVersion}`);
-  
-  // Create output directory if it doesn't exist
   await fs.mkdir(outputDir, { recursive: true });
   
   // Find all journey.yaml files
@@ -79,7 +74,6 @@ async function main() {
   } 
   console.log(`   Found ${journeys.length} user journey(s)`);
   
-  // Process each journey
   const results = [];
   
   for (const journey of journeys) {
@@ -89,41 +83,53 @@ async function main() {
       let caseIndex = 0;
       for (const testCase of config.cases) {
         caseIndex++;
-        const safeCaseName = (testCase.name || `case-${caseIndex}`).replace(/[^a-z0-9]/gi, '-').toLowerCase();
-        const outputFileName = `${journey.name}-${safeCaseName}.json`;
+        
+        const outputFileName = `${journey.name}-${caseIndex}.json`;
         const outputPath = path.join(outputDir, outputFileName);
         
-        const result = await runHttpYacTest(journey.path, config, testCase, outputPath, customEnv, httpyacVersion);
+        const metadataResult = await runHttpYacTest(journey.path, config, testCase, outputPath, customEnv, httpyacVersion);
         
-        results.push({
-          journey: journey.name,
-          case: testCase.name,
-          config: config,
-          ...result
-        });
+        results.push(metadataResult);
       }
     } catch (err) {
       console.error(`\nError processing journey '${journey.name}': ${err.message}`);
       results.push({
-        journey: journey.name,
         success: false,
-        error: err.message
+        journeyTitle: journey.name,
+        error: err.message,
+        timestamp: new Date().toISOString()
       });
     }
   }
   
+  // Create metadata.json
+  const metadataPath = path.join(outputDir, 'metadata.json');
+  const metadataData = {
+    timestamp: new Date().toISOString(),
+    summary: {
+      total: results.length,
+      successful: results.filter(r => r.success).length,
+      failed: results.filter(r => !r.success).length
+    },
+    tests: results
+  };
+
+  await fs.writeFile(metadataPath, JSON.stringify(metadataData, null, 2), 'utf8');
+  
   console.log('\nSummary');
-  console.log(`   Total Journeys: ${results.length}`);
-  console.log(`   Successful: ${results.filter(r => r.success).length}`);
-  console.log(`   Failed: ${results.filter(r => !r.success).length}`);
+  console.log(`   Total Test Cases: ${metadataData.summary.total}`);
+  console.log(`   Successful: ${metadataData.summary.successful}`);
+  console.log(`   Failed: ${metadataData.summary.failed}`);
+  console.log(`   Metadata generated: ${metadataPath}`);
 
   core.setOutput('results-dir', outputDir);
   core.setOutput('journey-count', journeys.length);
 
   console.log('\nhttpYac Action - Phase 2: Markdown Summary');
+  
   const reports = await loadReports(outputDir);
 
-  if (reports.length === 0) {
+  if (!reports || reports.length === 0) {
     console.log('   No JSON reports found to summarize');
     return;
   }

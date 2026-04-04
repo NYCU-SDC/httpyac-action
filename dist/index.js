@@ -25712,63 +25712,58 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
   console.log(`   Path: ${testCase.path}`);
   console.log(`   Test: ${testCase.test}`);
   
-  try {    
-    const absoluteOutputPath = path.isAbsolute(outputPath) ? outputPath : path.resolve(outputPath);
+  const absoluteOutputPath = path.isAbsolute(outputPath) ? outputPath : path.resolve(outputPath);
 
+  try {    
     const args = ['--yes', `httpyac@${httpyacVersion}`, 'send', testCase.path];
     for (const [key, value] of Object.entries(env || {})) {
       args.push('--var', `${key}=${value}`);
     }
     args.push('--name', testCase.test, '--json', '--output', 'none', '--output-failed', 'exchange');
 
-    const result = spawnSync('npx', args, {
-      cwd: journeyPath,
-      encoding: 'utf8',
-      maxBuffer: 5 * 1024 * 1024
-    });
-
-    let testData = null;
+    const outputFd = await fs.open(absoluteOutputPath, 'w');
+    
+    let result;
     try {
-      if (result.stdout) {
-        testData = JSON.parse(result.stdout);
-      }
-    } catch (parseErr) {
-      console.warn(`   Warning: Could not parse httpyac output as JSON.`);
-      testData = { rawOutput: result.stdout };
+      result = spawnSync('npx', args, {
+        cwd: journeyPath,
+        stdio: ['ignore', outputFd.fd, 'pipe'], 
+        encoding: 'utf8'
+      });
+    } finally {
+      await outputFd.close();
     }
 
-    const finalReport = {
-      journeyTitle: config.name || '',
-      journey: {
-        name: `${testCase.name}`,
-        description: testCase.description || ''
-      },
-      testResult: testData,
-      stderr: result.stderr,
-      timestamp: new Date().toISOString()
-    };
-
-    await fs.writeFile(absoluteOutputPath, JSON.stringify(finalReport, null, 2), 'utf8');
+    const success = result.status === 0 && !result.error;
 
     if (result.error) {
       throw result.error;
     }
-
-    if (result.status !== 0) {
-      throw new Error(`httpyac exited with code ${result.status}`);
+    if (!success) {
+      console.warn(`   httpyac exited with code ${result.status}`);
     }
-    
+
     return {
-      success: true,
-      output: outputPath
+      success: success,
+      journeyTitle: config.name || '',
+      caseName: testCase.name,
+      description: testCase.description || '',
+      testPath: testCase.path,
+      rawOutputFile: absoluteOutputPath,
+      stderr: result.stderr || null,
+      timestamp: new Date().toISOString()
     };
+
   } catch (err) {
     console.error(`   Failed: ${err.message}`);
     
     return {
       success: false,
+      journeyTitle: config.name || '',
+      caseName: testCase.name,
       error: err.message,
-      output: outputPath
+      rawOutputFile: absoluteOutputPath,
+      timestamp: new Date().toISOString()
     };
   }
 }
@@ -25884,7 +25879,7 @@ function getBadgeStyle(passed, failed, skipped) {
   return { badge: 'inactive', alt: 'No tests executed' };
 }
 
-function arseJsonString(value) {
+function parseJsonString(value) {
   if (typeof value !== 'string') {
     return { parsed: false, value };
   }
@@ -25926,7 +25921,7 @@ function prettyPrintBody(body) {
     return toCodeBlock(JSON.stringify(body, null, 2), 'json');
   }
 
-  const parsedResult = arseJsonString(body);
+  const parsedResult = parseJsonString(body);
   if (parsedResult.parsed) {
     return toCodeBlock(JSON.stringify(parsedResult.value, null, 2), 'json');
   }
@@ -26130,54 +26125,60 @@ function buildOverviewSection(reports, globalTotals) {
 }
 
 async function loadReports(outputDir) {
-  const entries = await fs.readdir(outputDir, { withFileTypes: true });
-  const jsonFiles = entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-    .map((entry) => path.join(outputDir, entry.name))
-    .sort((a, b) => a.localeCompare(b));
+  const metadataPath = path.join(outputDir, 'metadata.json');
+  let metadata;
+
+  try {
+    const content = await fs.readFile(metadataPath, 'utf8');
+    metadata = JSON.parse(content);
+  } catch (err) {
+    console.warn(`Could not read or parse metadata.json at ${metadataPath}: ${err.message}`);
+    return [];
+  }
 
   const reports = [];
 
-  for (const jsonPath of jsonFiles) {
+  for (const testMeta of (metadata.tests || [])) {
+    const report = {
+      path: testMeta.rawOutputFile,
+      journeyTitle: testMeta.journeyTitle || 'Unnamed Journey',
+      displayName: testMeta.caseName || path.basename(testMeta.rawOutputFile || 'unknown'),
+      description: testMeta.description || '',
+      requests: [],
+      passed: 0,
+      failed: testMeta.success ? 0 : 1,
+      skipped: 0,
+      total: testMeta.success ? 1 : 1,
+      duration: 'N/A',
+      passPercent: testMeta.success ? '100.00' : '0.00',
+      parseError: testMeta.error || null
+    };
+
     try {
-      const content = await fs.readFile(jsonPath, 'utf8');
-      const parsed = JSON.parse(content);
+      if (testMeta.rawOutputFile) {
+        const rawContent = await fs.readFile(testMeta.rawOutputFile, 'utf8');
+        const testData = JSON.parse(rawContent);
 
-      const journey = parsed.journey || {};
-      const testData = parsed.testResult || parsed;
-      
-      const requests = Array.isArray(testData.requests) ? testData.requests : [];
-      const normalizedSummary = normalizeSummary(testData.summary);
+        const requests = Array.isArray(testData.requests) ? testData.requests : [];
+        const normalizedSummary = normalizeSummary(testData.summary);
 
-      const displayName = journey.name || path.basename(jsonPath);
-      const description = journey.description || '';
-      const journeyTitle = parsed.journeyTitle || 'Unnamed Journey';
-
-      reports.push({
-        path: jsonPath,
-        journeyTitle,
-        displayName,
-        description,
-        requests,
-        ...normalizedSummary,
-        duration: getTotalDuration(requests),
-        passPercent: getPassPercentage(normalizedSummary.passed, normalizedSummary.failed)
-      });
+        report.requests = requests;
+        report.passed = normalizedSummary.passed;
+        report.failed = normalizedSummary.failed;
+        report.skipped = normalizedSummary.skipped;
+        report.total = normalizedSummary.total;
+        report.duration = getTotalDuration(requests);
+        report.passPercent = getPassPercentage(normalizedSummary.passed, normalizedSummary.failed);
+      } else {
+        report.parseError = 'No raw output file specified in metadata.';
+      }
     } catch (err) {
-      reports.push({
-        path: jsonPath,
-        displayName: `${path.basename(jsonPath)} (invalid JSON)`,
-        description: '',
-        requests: [],
-        passed: 0,
-        failed: 1,
-        skipped: 0,
-        total: 0,
-        duration: 'N/A',
-        passPercent: 'N/A',
-        parseError: err.message
-      });
+      report.parseError = report.parseError 
+        ? `${report.parseError} | Failed to load raw output: ${err.message}` 
+        : `Failed to load raw output: ${err.message}`;
     }
+
+    reports.push(report);
   }
 
   return reports;
@@ -36807,11 +36808,6 @@ async function main() {
   const customEnv = parseEnvInput(rawEnv);
   
   console.log('httpYac Action - Phase 1: Test Execution');
-  console.log(`   Scenarios Path: ${scenariosPath}`);
-  console.log(`   Output Directory: ${outputDir}`);
-  console.log(`   httpYac Version: ${httpyacVersion}`);
-  
-  // Create output directory if it doesn't exist
   await fs.mkdir(outputDir, { recursive: true });
   
   // Find all journey.yaml files
@@ -36830,7 +36826,6 @@ async function main() {
   } 
   console.log(`   Found ${journeys.length} user journey(s)`);
   
-  // Process each journey
   const results = [];
   
   for (const journey of journeys) {
@@ -36840,41 +36835,53 @@ async function main() {
       let caseIndex = 0;
       for (const testCase of config.cases) {
         caseIndex++;
-        const safeCaseName = (testCase.name || `case-${caseIndex}`).replace(/[^a-z0-9]/gi, '-').toLowerCase();
-        const outputFileName = `${journey.name}-${safeCaseName}.json`;
+        
+        const outputFileName = `${journey.name}-${caseIndex}.json`;
         const outputPath = path.join(outputDir, outputFileName);
         
-        const result = await runHttpYacTest(journey.path, config, testCase, outputPath, customEnv, httpyacVersion);
+        const metadataResult = await runHttpYacTest(journey.path, config, testCase, outputPath, customEnv, httpyacVersion);
         
-        results.push({
-          journey: journey.name,
-          case: testCase.name,
-          config: config,
-          ...result
-        });
+        results.push(metadataResult);
       }
     } catch (err) {
       console.error(`\nError processing journey '${journey.name}': ${err.message}`);
       results.push({
-        journey: journey.name,
         success: false,
-        error: err.message
+        journeyTitle: journey.name,
+        error: err.message,
+        timestamp: new Date().toISOString()
       });
     }
   }
   
+  // Create metadata.json
+  const metadataPath = path.join(outputDir, 'metadata.json');
+  const metadataData = {
+    timestamp: new Date().toISOString(),
+    summary: {
+      total: results.length,
+      successful: results.filter(r => r.success).length,
+      failed: results.filter(r => !r.success).length
+    },
+    tests: results
+  };
+
+  await fs.writeFile(metadataPath, JSON.stringify(metadataData, null, 2), 'utf8');
+  
   console.log('\nSummary');
-  console.log(`   Total Journeys: ${results.length}`);
-  console.log(`   Successful: ${results.filter(r => r.success).length}`);
-  console.log(`   Failed: ${results.filter(r => !r.success).length}`);
+  console.log(`   Total Test Cases: ${metadataData.summary.total}`);
+  console.log(`   Successful: ${metadataData.summary.successful}`);
+  console.log(`   Failed: ${metadataData.summary.failed}`);
+  console.log(`   Metadata generated: ${metadataPath}`);
 
   core.setOutput('results-dir', outputDir);
   core.setOutput('journey-count', journeys.length);
 
   console.log('\nhttpYac Action - Phase 2: Markdown Summary');
+  
   const reports = await loadReports(outputDir);
 
-  if (reports.length === 0) {
+  if (!reports || reports.length === 0) {
     console.log('   No JSON reports found to summarize');
     return;
   }

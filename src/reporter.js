@@ -98,7 +98,7 @@ function getBadgeStyle(passed, failed, skipped) {
   return { badge: 'inactive', alt: 'No tests executed' };
 }
 
-function arseJsonString(value) {
+function parseJsonString(value) {
   if (typeof value !== 'string') {
     return { parsed: false, value };
   }
@@ -140,7 +140,7 @@ function prettyPrintBody(body) {
     return toCodeBlock(JSON.stringify(body, null, 2), 'json');
   }
 
-  const parsedResult = arseJsonString(body);
+  const parsedResult = parseJsonString(body);
   if (parsedResult.parsed) {
     return toCodeBlock(JSON.stringify(parsedResult.value, null, 2), 'json');
   }
@@ -344,54 +344,60 @@ function buildOverviewSection(reports, globalTotals) {
 }
 
 async function loadReports(outputDir) {
-  const entries = await fs.readdir(outputDir, { withFileTypes: true });
-  const jsonFiles = entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-    .map((entry) => path.join(outputDir, entry.name))
-    .sort((a, b) => a.localeCompare(b));
+  const metadataPath = path.join(outputDir, 'metadata.json');
+  let metadata;
+
+  try {
+    const content = await fs.readFile(metadataPath, 'utf8');
+    metadata = JSON.parse(content);
+  } catch (err) {
+    console.warn(`Could not read or parse metadata.json at ${metadataPath}: ${err.message}`);
+    return [];
+  }
 
   const reports = [];
 
-  for (const jsonPath of jsonFiles) {
+  for (const testMeta of (metadata.tests || [])) {
+    const report = {
+      path: testMeta.rawOutputFile,
+      journeyTitle: testMeta.journeyTitle || 'Unnamed Journey',
+      displayName: testMeta.caseName || path.basename(testMeta.rawOutputFile || 'unknown'),
+      description: testMeta.description || '',
+      requests: [],
+      passed: 0,
+      failed: testMeta.success ? 0 : 1,
+      skipped: 0,
+      total: testMeta.success ? 1 : 1,
+      duration: 'N/A',
+      passPercent: testMeta.success ? '100.00' : '0.00',
+      parseError: testMeta.error || null
+    };
+
     try {
-      const content = await fs.readFile(jsonPath, 'utf8');
-      const parsed = JSON.parse(content);
+      if (testMeta.rawOutputFile) {
+        const rawContent = await fs.readFile(testMeta.rawOutputFile, 'utf8');
+        const testData = JSON.parse(rawContent);
 
-      const journey = parsed.journey || {};
-      const testData = parsed.testResult || parsed;
-      
-      const requests = Array.isArray(testData.requests) ? testData.requests : [];
-      const normalizedSummary = normalizeSummary(testData.summary);
+        const requests = Array.isArray(testData.requests) ? testData.requests : [];
+        const normalizedSummary = normalizeSummary(testData.summary);
 
-      const displayName = journey.name || path.basename(jsonPath);
-      const description = journey.description || '';
-      const journeyTitle = parsed.journeyTitle || 'Unnamed Journey';
-
-      reports.push({
-        path: jsonPath,
-        journeyTitle,
-        displayName,
-        description,
-        requests,
-        ...normalizedSummary,
-        duration: getTotalDuration(requests),
-        passPercent: getPassPercentage(normalizedSummary.passed, normalizedSummary.failed)
-      });
+        report.requests = requests;
+        report.passed = normalizedSummary.passed;
+        report.failed = normalizedSummary.failed;
+        report.skipped = normalizedSummary.skipped;
+        report.total = normalizedSummary.total;
+        report.duration = getTotalDuration(requests);
+        report.passPercent = getPassPercentage(normalizedSummary.passed, normalizedSummary.failed);
+      } else {
+        report.parseError = 'No raw output file specified in metadata.';
+      }
     } catch (err) {
-      reports.push({
-        path: jsonPath,
-        displayName: `${path.basename(jsonPath)} (invalid JSON)`,
-        description: '',
-        requests: [],
-        passed: 0,
-        failed: 1,
-        skipped: 0,
-        total: 0,
-        duration: 'N/A',
-        passPercent: 'N/A',
-        parseError: err.message
-      });
+      report.parseError = report.parseError 
+        ? `${report.parseError} | Failed to load raw output: ${err.message}` 
+        : `Failed to load raw output: ${err.message}`;
     }
+
+    reports.push(report);
   }
 
   return reports;

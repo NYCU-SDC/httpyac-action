@@ -64,63 +64,58 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
   console.log(`   Path: ${testCase.path}`);
   console.log(`   Test: ${testCase.test}`);
   
-  try {    
-    const absoluteOutputPath = path.isAbsolute(outputPath) ? outputPath : path.resolve(outputPath);
+  const absoluteOutputPath = path.isAbsolute(outputPath) ? outputPath : path.resolve(outputPath);
 
+  try {    
     const args = ['--yes', `httpyac@${httpyacVersion}`, 'send', testCase.path];
     for (const [key, value] of Object.entries(env || {})) {
       args.push('--var', `${key}=${value}`);
     }
     args.push('--name', testCase.test, '--json', '--output', 'none', '--output-failed', 'exchange');
 
-    const result = spawnSync('npx', args, {
-      cwd: journeyPath,
-      encoding: 'utf8',
-      maxBuffer: 5 * 1024 * 1024
-    });
-
-    let testData = null;
+    const outputFd = await fs.open(absoluteOutputPath, 'w');
+    
+    let result;
     try {
-      if (result.stdout) {
-        testData = JSON.parse(result.stdout);
-      }
-    } catch (parseErr) {
-      console.warn(`   Warning: Could not parse httpyac output as JSON.`);
-      testData = { rawOutput: result.stdout };
+      result = spawnSync('npx', args, {
+        cwd: journeyPath,
+        stdio: ['ignore', outputFd.fd, 'pipe'], 
+        encoding: 'utf8'
+      });
+    } finally {
+      await outputFd.close();
     }
 
-    const finalReport = {
-      journeyTitle: config.name || '',
-      journey: {
-        name: `${testCase.name}`,
-        description: testCase.description || ''
-      },
-      testResult: testData,
-      stderr: result.stderr,
-      timestamp: new Date().toISOString()
-    };
-
-    await fs.writeFile(absoluteOutputPath, JSON.stringify(finalReport, null, 2), 'utf8');
+    const success = result.status === 0 && !result.error;
 
     if (result.error) {
       throw result.error;
     }
-
-    if (result.status !== 0) {
-      throw new Error(`httpyac exited with code ${result.status}`);
+    if (!success) {
+      console.warn(`   httpyac exited with code ${result.status}`);
     }
-    
+
     return {
-      success: true,
-      output: outputPath
+      success: success,
+      journeyTitle: config.name || '',
+      caseName: testCase.name,
+      description: testCase.description || '',
+      testPath: testCase.path,
+      rawOutputFile: absoluteOutputPath,
+      stderr: result.stderr || null,
+      timestamp: new Date().toISOString()
     };
+
   } catch (err) {
     console.error(`   Failed: ${err.message}`);
     
     return {
       success: false,
+      journeyTitle: config.name || '',
+      caseName: testCase.name,
       error: err.message,
-      output: outputPath
+      rawOutputFile: absoluteOutputPath,
+      timestamp: new Date().toISOString()
     };
   }
 }
