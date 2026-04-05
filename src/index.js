@@ -51,7 +51,7 @@ async function main() {
   const scenariosPath = getInputOrDefault('scenarios-path', './scenarios/user-journey');
   const outputDir = getInputOrDefault('output-dir', './httpyac-results');
   const rawEnv = getInputOrDefault('env', '');
-  const httpyacVersion = getInputOrDefault('httpyac-version', 'latest');
+  const httpyacVersion = getInputOrDefault('httpyac-version', '6.16.7');
 
   const customEnv = parseEnvInput(rawEnv);
   

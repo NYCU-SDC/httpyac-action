@@ -25706,7 +25706,7 @@ async function parseJourneyYaml(filepath) {
   }
 }
 
-async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, httpyacVersion = 'latest') {  
+async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, httpyacVersion) {  
   console.log(`\nTesting: ${config.name} - ${testCase.name}`);
   console.log(`   Description: ${testCase.description || ''}`);
   console.log(`   Path: ${testCase.path}`);
@@ -36803,7 +36803,7 @@ async function main() {
   const scenariosPath = getInputOrDefault('scenarios-path', './scenarios/user-journey');
   const outputDir = getInputOrDefault('output-dir', './httpyac-results');
   const rawEnv = getInputOrDefault('env', '');
-  const httpyacVersion = getInputOrDefault('httpyac-version', 'latest');
+  const httpyacVersion = getInputOrDefault('httpyac-version', '6.16.7');
 
   const customEnv = parseEnvInput(rawEnv);
   

@@ -58,7 +58,7 @@ async function parseJourneyYaml(filepath) {
   }
 }
 
-async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, httpyacVersion = 'latest') {  
+async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, httpyacVersion) {  
   console.log(`\nTesting: ${config.name} - ${testCase.name}`);
   console.log(`   Description: ${testCase.description || ''}`);
   console.log(`   Path: ${testCase.path}`);
