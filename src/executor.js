@@ -5,6 +5,50 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const yaml = require('yaml');
 
+function classifyHttpYacResult(result) {
+  if (result.error) {
+    return {
+      success: false,
+      exitCode: typeof result.status === 'number' ? result.status : null,
+      failureType: 'PROCESS_ERROR',
+      failureMessage: result.error.message || 'Failed to execute httpyac process.'
+    };
+  }
+
+  const exitCode = typeof result.status === 'number' ? result.status : null;
+
+  switch (exitCode) {
+    case 0:
+      return {
+        success: true,
+        exitCode,
+        failureType: null,
+        failureMessage: null
+      };
+    case 10:
+      return {
+        success: false,
+        exitCode,
+        failureType: 'EXECUTION_ERROR',
+        failureMessage: 'Unexpected error during httpyac execution.'
+      };
+    case 20:
+      return {
+        success: false,
+        exitCode,
+        failureType: 'TEST_FAILED',
+        failureMessage: 'httpyac test failed.'
+      };
+    default:
+      return {
+        success: false,
+        exitCode,
+        failureType: 'UNKNOWN_ERROR',
+        failureMessage: `httpyac exited with unexpected code ${exitCode}.`
+      };
+  }
+}
+
 async function findJourneysYaml(baseDir) {
   const journeys = [];
   const skippedJourneys = [];
@@ -71,7 +115,8 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
     for (const [key, value] of Object.entries(env || {})) {
       args.push('--var', `${key}=${value}`);
     }
-    args.push('--name', testCase.test, '--json', '--output', 'none', '--output-failed', 'exchange');
+    args.push('--name', testCase.test, '--json', '--output', 'exchange', '--output-failed', 'exchange');
+
 
     const outputFd = await fs.open(absoluteOutputPath, 'w');
     
@@ -86,13 +131,15 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
       await outputFd.close();
     }
 
-    const success = result.status === 0 && !result.error;
+    const classification = classifyHttpYacResult(result);
+    const success = classification.success;
+    const failureMessage = null;
 
-    if (result.error) {
-      throw result.error;
-    }
     if (!success) {
-      console.warn(`   httpyac exited with code ${result.status}`);
+      if (classification.failureType !== 'TEST_FAILED') {
+        console.warn(`   ${classification.failureType}: ${classification.failureMessage}`);
+      }
+      failureMessage = classification.failureMessage;
     }
 
     return {
@@ -102,7 +149,9 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
       description: testCase.description || '',
       testPath: testCase.path,
       rawOutputFile: absoluteOutputPath,
-      stderr: result.stderr || null,
+      exitCode: classification.exitCode,
+      failureType: classification.failureType,
+      error: failureMessage,
       timestamp: new Date().toISOString()
     };
 
@@ -113,6 +162,8 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
       success: false,
       journeyTitle: config.name || '',
       caseName: testCase.name,
+      exitCode: null,
+      failureType: 'ACTION_ERROR',
       error: err.message,
       rawOutputFile: absoluteOutputPath,
       timestamp: new Date().toISOString()

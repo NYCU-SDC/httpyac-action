@@ -15,10 +15,11 @@ const IMPORTANT_RESPONSE_HEADERS = new Set([
 
 function normalizeSummary(summary = {}) {
   const passed = Number(summary.successTests || 0);
-  const failed = Number(summary.failedTests || 0) + Number(summary.erroredTests || 0);
+  const failed = Number(summary.failedTests || 0);
+  const errored = Number(summary.erroredTests || 0);
   const skipped = Number(summary.skippedTests || 0);
-  const total = Number(summary.totalTests || passed + failed + skipped);
-  return { passed, failed, skipped, total };
+  const total = Number(summary.totalTests || passed + failed + errored + skipped);
+  return { passed, failed, errored, skipped, total };
 }
 
 function normalizeRequestSummary(request = {}) {
@@ -29,6 +30,7 @@ function normalizeRequestSummary(request = {}) {
   const results = Array.isArray(request.testResults) ? request.testResults : [];
   let passed = 0;
   let failed = 0;
+  let errored = 0;
   let skipped = 0;
 
   for (const result of results) {
@@ -40,8 +42,10 @@ function normalizeRequestSummary(request = {}) {
         skipped += 1;
         break;
       case 'FAILED':
-      case 'ERRORED':
         failed += 1;
+        break;
+      case 'ERROR':
+        errored += 1;
         break;
       default:
         break;
@@ -51,8 +55,9 @@ function normalizeRequestSummary(request = {}) {
   return {
     passed,
     failed,
+    errored,
     skipped,
-    total: passed + failed + skipped
+    total: passed + failed + errored + skipped
   };
 }
 
@@ -73,8 +78,8 @@ function getTotalDuration(requests = []) {
   return formatDurationMs(total);
 }
 
-function getPassPercentage(passed, failed) {
-  const executed = passed + failed;
+function getPassPercentage(passed, failed, errored) {
+  const executed = passed + failed + errored;
   if (executed <= 0) {
     return 'N/A';
   }
@@ -82,7 +87,11 @@ function getPassPercentage(passed, failed) {
   return ((passed / executed) * 100).toFixed(2);
 }
 
-function getBadgeStyle(passed, failed, skipped) {
+function getBadgeStyle(passed, failed, errored, skipped) {
+  if (errored > 0) {
+    return { badge: 'critical', alt: 'Tests errored' };
+  }
+
   if (failed > 0) {
     return { badge: 'critical', alt: 'Tests failed' };
   }
@@ -195,7 +204,29 @@ function getRequestDisplayName(request, existingNames) {
 }
 
 function getFailedTests(testResults = []) {
-  return testResults.filter((result) => result.status && result.status !== 'SUCCESS');
+  return testResults.filter((result) => result.status && result.status !== 'SUCCESS' && result.status !== 'SKIPPED');
+}
+
+function getTestResultLabel(test = {}) {
+  const status = (test.status || '').toUpperCase();
+
+  if (status === 'ERROR') {
+    return 'ERROR';
+  }
+
+  if (status === 'FAILED') {
+    return 'FAILED';
+  }
+
+  if (test.error && test.error.errorType) {
+    return test.error.errorType;
+  }
+
+  if (test.errorType) {
+    return test.errorType;
+  }
+
+  return status || 'FAILED';
 }
 
 function buildRequestFailureDetails(request, reportIndex, requestIndex, requestName) {
@@ -223,15 +254,15 @@ function buildRequestFailureDetails(request, reportIndex, requestIndex, requestN
   lines.push('</br>Headers:' + formatHeaders(response.headers, true));
   lines.push('Body:' + prettyPrintBody(response.body));
   lines.push('');
-  lines.push('**Failed Test Details**');
+  lines.push('**Test Details**');
 
   if (failedTests.length === 0) {
-    lines.push('- _No failed test details found._');
+    lines.push('- _No test details found._');
     return lines.join('\n');
   }
 
   failedTests.forEach((test, idx) => {
-    lines.push(`${idx + 1}. ${test.errorType || 'FAILED'}: ${test.message || 'Unnamed test'}`);
+    lines.push(`${idx + 1}. ${getTestResultLabel(test)}: ${test.message || 'Unnamed test'}`);
   });
 
   return lines.join('\n');
@@ -243,7 +274,7 @@ function buildRequestTableRows(report, reportIndex) {
   return report.requests.map((request, requestIndex) => {
     const requestSummary = normalizeRequestSummary(request);
     const hasTests = requestSummary.total > 0;
-    const requestFailed = requestSummary.failed > 0;
+    const requestFailed = requestSummary.failed > 0 || requestSummary.errored > 0;
     const displayName = getRequestDisplayName(request, existingNames);
 
     const requestNameCell = requestFailed
@@ -252,11 +283,12 @@ function buildRequestTableRows(report, reportIndex) {
 
     const passedCell = hasTests && requestSummary.passed > 0 ? `${requestSummary.passed} ✅` : '';
     const failedCell = hasTests && requestSummary.failed > 0 ? `${requestSummary.failed} ❌` : '';
+    const erroredCell = hasTests && requestSummary.errored > 0 ? `${requestSummary.errored} 🔥` : '';
     const skippedCell = hasTests && requestSummary.skipped > 0 ? `${requestSummary.skipped} ⚪` : '';
 
     return {
       requestName: displayName,
-      row: `|${requestNameCell}|${passedCell}|${failedCell}|${skippedCell}|${formatDurationMs(request.duration)}|`
+      row: `|${requestNameCell}|${passedCell}|${failedCell}|${erroredCell}|${skippedCell}|${formatDurationMs(request.duration)}|`
     };
   });
 }
@@ -284,16 +316,16 @@ function buildReportSection(report, reportIndex) {
     sectionLines.push('');
   }
 
-  sectionLines.push(`**${report.total}** tests were completed in **${report.duration}** with **${report.passed}** passed, **${report.failed}** failed and **${report.skipped}** skipped.`);
-  sectionLines.push('|Test suite|Passed|Failed|Skipped|Time|');
-  sectionLines.push('|:---|---:|---:|---:|---:|');
+  sectionLines.push(`**${report.total}** tests were completed in **${report.duration}** with **${report.passed}** passed, **${report.failed}** failed, **${report.errored}** errored and **${report.skipped}** skipped.`);
+  sectionLines.push('|Test suite|Passed|Failed|Errored|Skipped|Time|');
+  sectionLines.push('|:---|---:|---:|---:|---:|---:|');
   requestRows.forEach((row) => sectionLines.push(row.row));
 
   const failedRequests = report.requests
     .map((request, idx) => ({ request, idx }))
     .filter(({ request }) => {
       const requestSummary = normalizeRequestSummary(request);
-      return requestSummary.failed > 0;
+      return requestSummary.failed > 0 || requestSummary.errored > 0;
     });
 
   for (const { request, idx } of failedRequests) {
@@ -310,9 +342,9 @@ function buildReportSection(report, reportIndex) {
 }
 
 function buildOverviewSection(reports, globalTotals) {
-  const { passed, failed, skipped } = globalTotals;
-  const badgeStyle = getBadgeStyle(passed, failed, skipped);
-  const badgeText = encodeURIComponent(`${passed} passed, ${failed} failed, ${skipped} skipped`);
+  const { passed, failed, errored, skipped } = globalTotals;
+  const badgeStyle = getBadgeStyle(passed, failed, errored, skipped);
+  const badgeText = encodeURIComponent(`${passed} passed, ${failed} failed, ${errored} errored, ${skipped} skipped`);
 
   const lines = [];
   lines.push(`## Overview`);
@@ -330,17 +362,47 @@ function buildOverviewSection(reports, globalTotals) {
   for (const [title, groupReports] of Object.entries(groups)) {
     lines.push('');
     lines.push(`**${title}**`);
-    lines.push('|Test Case|Passed|Failed|Skipped|Pass %|Time|');
-    lines.push('|:---|---:|---:|---:|---:|---:|');
+    lines.push('|Test Case|Passed|Failed|Errored|Skipped|Pass %|Time|');
+    lines.push('|:---|---:|---:|---:|---:|---:|---:|');
 
     groupReports.forEach(({ report, index }) => {
       lines.push(
-        `|[${report.displayName}](#user-content-r${index})|${report.passed}|${report.failed}|${report.skipped}|${report.passPercent}|${report.duration}|`
+        `|[${report.displayName}](#user-content-r${index})|${report.passed}|${report.failed}|${report.errored}|${report.skipped}|${report.passPercent}|${report.duration}|`
       );
     });
   }
 
   return lines.join('\n');
+}
+
+function classifyFailureFromMetadata(testMeta = {}) {
+  if (testMeta.success) {
+    return { failed: 0, errored: 0 };
+  }
+
+  switch (testMeta.failureType) {
+    case 'TEST_FAILED':
+      return { failed: 1, errored: 0 };
+    case 'EXECUTION_ERROR':
+    case 'PROCESS_ERROR':
+    case 'ACTION_ERROR':
+    case 'UNKNOWN_ERROR':
+      return { failed: 0, errored: 1 };
+    default:
+      return { failed: 0, errored: 1 };
+  }
+}
+
+function getMetadataFailureMessage(testMeta = {}) {
+  if (testMeta.success) {
+    return null;
+  }
+
+  const details = [];
+
+  if (testMeta.failureType !== "TEST_FAILED") {
+    details.push(`${testMeta.failureType} : Error: ${testMeta.error}`);
+  }
 }
 
 async function loadReports(outputDir) {
@@ -358,19 +420,22 @@ async function loadReports(outputDir) {
   const reports = [];
 
   for (const testMeta of (metadata.tests || [])) {
+    const fallbackSummary = classifyFailureFromMetadata(testMeta);
     const report = {
       path: testMeta.rawOutputFile,
       journeyTitle: testMeta.journeyTitle || 'Unnamed Journey',
       displayName: testMeta.caseName || path.basename(testMeta.rawOutputFile || 'unknown'),
       description: testMeta.description || '',
       requests: [],
-      passed: 0,
-      failed: testMeta.success ? 0 : 1,
+      passed: testMeta.success ? 1 : 0,
+      failed: fallbackSummary.failed,
+      errored: fallbackSummary.errored,
       skipped: 0,
-      total: testMeta.success ? 1 : 1,
+      total: 1,
       duration: 'N/A',
       passPercent: testMeta.success ? '100.00' : '0.00',
-      parseError: testMeta.error || null
+      metadataFailure: getMetadataFailureMessage(testMeta) || null,
+      parseError: null
     };
 
     try {
@@ -384,10 +449,11 @@ async function loadReports(outputDir) {
         report.requests = requests;
         report.passed = normalizedSummary.passed;
         report.failed = normalizedSummary.failed;
+        report.errored = normalizedSummary.errored;
         report.skipped = normalizedSummary.skipped;
         report.total = normalizedSummary.total;
         report.duration = getTotalDuration(requests);
-        report.passPercent = getPassPercentage(normalizedSummary.passed, normalizedSummary.failed);
+        report.passPercent = getPassPercentage(normalizedSummary.passed, normalizedSummary.failed, normalizedSummary.errored);
       } else {
         report.parseError = 'No raw output file specified in metadata.';
       }
@@ -408,10 +474,11 @@ function buildMarkdownSummary(reports) {
     (acc, report) => {
       acc.passed += report.passed;
       acc.failed += report.failed;
+      acc.errored += report.errored;
       acc.skipped += report.skipped;
       return acc;
     },
-    { passed: 0, failed: 0, skipped: 0 }
+    { passed: 0, failed: 0, errored: 0, skipped: 0 }
   );
 
   const lines = [];
@@ -423,6 +490,11 @@ function buildMarkdownSummary(reports) {
   reports.forEach((report, index) => {
     lines.push(buildReportSection(report, index));
     lines.push('');
+
+    if (report.metadataFailure) {
+      lines.push(`> ${report.metadataFailure}`);
+      lines.push('');
+    }
 
     if (report.parseError) {
       lines.push(`> Failed to parse ${report.displayName}: ${report.parseError}`);
