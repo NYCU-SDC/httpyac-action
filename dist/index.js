@@ -25989,6 +25989,96 @@ function prettyPrintBody(body) {
   return toCodeBlock(String(body));
 }
 
+function toHeaderName(name) {
+  return String(name)
+    .split('-')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join('-');
+}
+
+function normalizeBodyText(body) {
+  if (body === undefined || body === null || body === '') {
+    return '';
+  }
+
+  if (typeof body === 'object') {
+    return JSON.stringify(body, null, 2);
+  }
+
+  const parsedResult = parseJsonString(body);
+  if (parsedResult.parsed) {
+    return JSON.stringify(parsedResult.value, null, 2);
+  }
+
+  return String(body);
+}
+
+function getRequestTarget(urlValue) {
+  if (!urlValue) {
+    return '/';
+  }
+
+  try {
+    const parsed = new URL(urlValue);
+    return `${parsed.pathname || '/'}${parsed.search || ''}`;
+  } catch (_err) {
+    return String(urlValue);
+  }
+}
+
+function getHostFromUrl(urlValue) {
+  if (!urlValue) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(urlValue);
+    return parsed.host || null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function getHttpProtocol(response = {}) {
+  if (response.protocol) {
+    return response.protocol;
+  }
+
+  return 'httpYac/6.16.7'; // Default to httpYac version if protocol is not provided
+}
+
+function formatHttpRequestBlock(responseRequest = {}, response = {}) {
+  const method = responseRequest.method || 'N/A';
+  const requestUrl = responseRequest.url || null;
+  const protocol = getHttpProtocol(response);
+  const target = getRequestTarget(requestUrl);
+  const requestLine = `${method} ${target} ${protocol}`;
+
+  const headers = { ...(responseRequest.headers || {}) };
+  const host = getHostFromUrl(requestUrl);
+  if (host && !Object.keys(headers).some((key) => key.toLowerCase() === 'host')) {
+    headers.host = host;
+  }
+
+  const headerLines = Object.entries(headers).map(([key, value]) => `${toHeaderName(key)}: ${value}`);
+  const bodyText = normalizeBodyText(responseRequest.body);
+
+  return [requestLine, ...headerLines, '', bodyText].join('\n').trimEnd();
+}
+
+function formatHttpResponseBlock(response = {}) {
+  const protocol = getHttpProtocol(response);
+  const statusCode = response.statusCode ?? 'N/A';
+  const statusMessage = response.statusMessage || '';
+  const statusLine = `${protocol} ${statusCode} ${statusMessage}`.trim();
+
+  const headers = response.headers || {};
+  const headerLines = Object.entries(headers).map(([key, value]) => `${toHeaderName(key)}: ${value}`);
+  const bodyText = normalizeBodyText(response.body);
+
+  return [statusLine, ...headerLines, '', bodyText].join('\n').trimEnd();
+}
+
 function formatHeaders(headers, onlyImportant = false) {
   if (!headers || typeof headers !== 'object') {
     return '_N/A_';
@@ -26067,24 +26157,8 @@ function buildRequestFailureDetails(request, reportIndex, requestIndex, requestN
   const responseRequest = response.request || {};
   const failedTests = getFailedTests(request.testResults || []);
 
-  const method = request.method || 'N/A';
-  const requestUrl = request.url || 'N/A';
-  const statusCode = response.statusCode ?? 'N/A';
-  const statusMessage = response.statusMessage || '';
-
   const lines = [];
-  lines.push(`#### <a id="${anchorId}" href="#${anchorId}">${requestName}</a>`);
-  lines.push('');
-  lines.push('**Request Information**');
-  lines.push(`</br>${method} ${requestUrl}`);
-  lines.push(`</br>Duration: ${formatDurationMs(request.duration)}`);
-  lines.push('</br>Headers:' + formatHeaders(responseRequest.headers));
-  lines.push('Body:' + prettyPrintBody(responseRequest.body));
-  lines.push('');
-  lines.push('**Response Information**');
-  lines.push(`</br>Status: ${statusCode} ${statusMessage}`.trim());
-  lines.push('</br>Headers:' + formatHeaders(response.headers, true));
-  lines.push('Body:' + prettyPrintBody(response.body));
+  lines.push(`#### <a id="${anchorId}" href="#${anchorId}"></a>🧪 ${requestName}`);
   lines.push('');
   lines.push('**Test Details**');
 
@@ -26096,6 +26170,13 @@ function buildRequestFailureDetails(request, reportIndex, requestIndex, requestN
   failedTests.forEach((test, idx) => {
     lines.push(`${idx + 1}. ${getTestResultLabel(test)}: ${test.message || 'Unnamed test'}`);
   });
+
+  lines.push('</br>**Request Information**');
+  lines.push(toCodeBlock(formatHttpRequestBlock(responseRequest, response), 'http'));
+  lines.push('');
+  lines.push('**Response Information**');
+  lines.push(toCodeBlock(formatHttpResponseBlock(response), 'http'));
+  lines.push('');
 
   return lines.join('\n');
 }
@@ -26133,9 +26214,7 @@ function buildReportSection(report, reportIndex) {
   const reportAnchor = `user-content-r${reportIndex}`;
   const allPassed = report.total > 0 && report.passed === report.total;
 
-  sectionLines.push(`## ${report.journeyTitle}`);
-
-  sectionLines.push(`### <a id="${reportAnchor}" href="#${reportAnchor}">${report.displayName}</a>`);
+  sectionLines.push(`### <a id="${reportAnchor}" href="#${reportAnchor}"></a>${report.displayName}`);
 
   if (report.description) {
     sectionLines.push(`> ${report.description}`);
@@ -26149,7 +26228,7 @@ function buildReportSection(report, reportIndex) {
   }
 
   sectionLines.push(`**${report.total}** tests were completed in **${report.duration}** with **${report.passed}** passed, **${report.failed}** failed, **${report.errored}** errored and **${report.skipped}** skipped.`);
-  sectionLines.push('|Test suite|Passed|Failed|Errored|Skipped|Time|');
+  sectionLines.push('|Test Name|Passed|Failed|Errored|Skipped|Time|');
   sectionLines.push('|:---|---:|---:|---:|---:|---:|');
   requestRows.forEach((row) => sectionLines.push(row.row));
 
@@ -26319,20 +26398,33 @@ function buildMarkdownSummary(reports) {
   lines.push(buildOverviewSection(reports, totals));
   lines.push('');
 
+  const groupedReports = {};
   reports.forEach((report, index) => {
-    lines.push(buildReportSection(report, index));
-    lines.push('');
-
-    if (report.metadataFailure) {
-      lines.push(`> ${report.metadataFailure}`);
-      lines.push('');
+    const title = report.journeyTitle || 'Unnamed Journey';
+    if (!groupedReports[title]) {
+      groupedReports[title] = [];
     }
-
-    if (report.parseError) {
-      lines.push(`> Failed to parse ${report.displayName}: ${report.parseError}`);
-      lines.push('');
-    }
+    groupedReports[title].push({ report, index });
   });
+
+  for (const [title, journeyReports] of Object.entries(groupedReports)) {
+    lines.push(`## ${title}`);
+
+    journeyReports.forEach(({ report, index }) => {
+      lines.push(buildReportSection(report, index));
+      lines.push('');
+
+      if (report.metadataFailure) {
+        lines.push(`> ${report.metadataFailure}`);
+        lines.push('');
+      }
+
+      if (report.parseError) {
+        lines.push(`> Failed to parse ${report.displayName}: ${report.parseError}`);
+        lines.push('');
+      }
+    });
+  }
 
   return lines.join('\n').trim() + '\n';
 }
