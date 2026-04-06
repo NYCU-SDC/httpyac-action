@@ -339,7 +339,7 @@ function buildRequestFailureDetails(request, reportIndex, requestIndex, requestN
     lines.push(`${idx + 1}. ${getTestResultLabel(test)}: ${test.message || 'Unnamed test'}`);
   });
 
-  lines.push('</br>**Request Information**');
+  lines.push('\n**Request Information**');
   lines.push(toCodeBlock(formatHttpRequestBlock(responseRequest, response), 'http'));
   lines.push('');
   lines.push('**Response Information**');
