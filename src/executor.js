@@ -133,7 +133,7 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
 
     const classification = classifyHttpYacResult(result);
     const success = classification.success;
-    const failureMessage = null;
+    let failureMessage = null;
 
     if (!success) {
       if (classification.failureType !== 'TEST_FAILED') {

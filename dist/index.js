@@ -25781,7 +25781,7 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
 
     const classification = classifyHttpYacResult(result);
     const success = classification.success;
-    const failureMessage = null;
+    let failureMessage = null;
 
     if (!success) {
       if (classification.failureType !== 'TEST_FAILED') {
@@ -26216,8 +26216,18 @@ function buildReportSection(report, reportIndex) {
 
   sectionLines.push(`### <a id="${reportAnchor}" href="#${reportAnchor}"></a>${report.displayName}`);
 
+  if (report.parseError) {
+    sectionLines.push(`> Failed to parse ${report.displayName}: ${report.parseError}`);
+    sectionLines.push('');
+    return sectionLines.join('\n');
+  }
+
   if (report.description) {
     sectionLines.push(`> ${report.description}`);
+    sectionLines.push('');
+  }
+  if (report.metadataFailure) {
+    sectionLines.push(`> Error occurred during testing: ${report.metadataFailure}`);
     sectionLines.push('');
   }
 
@@ -26312,8 +26322,10 @@ function getMetadataFailureMessage(testMeta = {}) {
   const details = [];
 
   if (testMeta.failureType !== "TEST_FAILED") {
-    details.push(`${testMeta.failureType} : Error: ${testMeta.error}`);
+    details.push(`${testMeta.failureType}: ${testMeta.error}`);
   }
+
+  return details.length > 0 ? details.join('\n') : null;
 }
 
 async function loadReports(outputDir) {
@@ -26413,16 +26425,6 @@ function buildMarkdownSummary(reports) {
     journeyReports.forEach(({ report, index }) => {
       lines.push(buildReportSection(report, index));
       lines.push('');
-
-      if (report.metadataFailure) {
-        lines.push(`> ${report.metadataFailure}`);
-        lines.push('');
-      }
-
-      if (report.parseError) {
-        lines.push(`> Failed to parse ${report.displayName}: ${report.parseError}`);
-        lines.push('');
-      }
     });
   }
 
