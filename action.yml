@@ -9,28 +9,17 @@ branding:
 inputs:
   scenarios-path:
     description: 'Path to the scenarios directory containing user journeys'
-    required: false
-    default: './scenarios/user-journey'
+    required: true
   output-dir:
     description: 'Directory to save JSON output files'
     required: false
     default: './httpyac-results'
-  httpyac-version:
-    description: 'Version of httpYac CLI to use'
-    required: false
-    default: '6.16.7'
   env:
     description: 'Environment variables to pass to httpYac tests'
     required: true
     default: |
       BASE_URL=http://127.0.0.1:4010/api
       LOGIN_USER_ID=00000000-0000-0000-0000-000000000001
-
-outputs:
-  results-dir:
-    description: 'Directory containing the generated JSON result files'
-  journey-count:
-    description: 'Number of user journeys tested'
 
 runs:
   using: 'node20'

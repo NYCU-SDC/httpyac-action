@@ -6,6 +6,8 @@ const path = require('path');
 const { findJourneysYaml, parseJourneyYaml, runHttpYacTest } = require('./executor');
 const { loadReports, buildMarkdownSummary, writeSummary } = require('./reporter');
 
+const HTTPYAC_VERSION = '6.16.7';
+
 function parseEnvInput(envInput) {
   const parsedEnv = {};
 
@@ -42,16 +44,10 @@ function parseEnvInput(envInput) {
   return parsedEnv;
 }
 
-function getInputOrDefault(name, fallback) {
-  const value = core.getInput(name, { required: false });
-  return value ? value : fallback;
-}
-
 async function main() {
-  const scenariosPath = getInputOrDefault('scenarios-path', './scenarios/user-journey');
-  const outputDir = getInputOrDefault('output-dir', './httpyac-results');
-  const rawEnv = getInputOrDefault('env', '');
-  const httpyacVersion = getInputOrDefault('httpyac-version', '6.16.7');
+  const scenariosPath = core.getInput('scenarios-path', { required: true });
+  const outputDir = core.getInput('output-dir', { required: false }) || './httpyac-results';
+  const rawEnv = core.getInput('env', { required: true });
 
   const customEnv = parseEnvInput(rawEnv);
   
@@ -68,8 +64,6 @@ async function main() {
 
   if (journeys.length === 0) {
     console.log('   No user journeys found');
-    core.setOutput('results-dir', outputDir);
-    core.setOutput('journey-count', 0);
     return;
   } 
   console.log(`   Found ${journeys.length} user journey(s)`);
@@ -87,7 +81,7 @@ async function main() {
         const outputFileName = `${journey.name}-${caseIndex}.json`;
         const outputPath = path.join(outputDir, outputFileName);
         
-        const metadataResult = await runHttpYacTest(journey.path, config, testCase, outputPath, customEnv, httpyacVersion);
+        const metadataResult = await runHttpYacTest(journey.path, config, testCase, outputPath, customEnv, HTTPYAC_VERSION);
         
         results.push(metadataResult);
       }
@@ -121,9 +115,6 @@ async function main() {
   console.log(`   Successful: ${metadataData.summary.successful}`);
   console.log(`   Failed: ${metadataData.summary.failed}`);
   console.log(`   Metadata generated: ${metadataPath}`);
-
-  core.setOutput('results-dir', outputDir);
-  core.setOutput('journey-count', journeys.length);
 
   console.log('\nhttpYac Action - Phase 2: Markdown Summary');
   
