@@ -5,6 +5,8 @@ const fs = require('fs').promises;
 const path = require('path');
 const { findJourneysYaml, parseJourneyYaml, runHttpYacTest } = require('./executor');
 const { loadReports, buildMarkdownSummary, writeSummary } = require('./reporter');
+const { isTestFailed, isErrorResult } = require('./error-types');
+const { error } = require('console');
 
 const HTTPYAC_VERSION = '6.16.7';
 
@@ -98,12 +100,15 @@ async function main() {
   
   // Create metadata.json
   const metadataPath = path.join(outputDir, 'metadata.json');
+  const failedCount = results.filter(isTestFailed).length;
+  const errorCount = results.filter(isErrorResult).length;
   const metadataData = {
     timestamp: new Date().toISOString(),
     summary: {
       total: results.length,
       successful: results.filter(r => r.success).length,
-      failed: results.filter(r => !r.success).length
+      failed: failedCount,
+      error: errorCount
     },
     tests: results
   };
@@ -114,6 +119,7 @@ async function main() {
   console.log(`   Total Test Cases: ${metadataData.summary.total}`);
   console.log(`   Successful: ${metadataData.summary.successful}`);
   console.log(`   Failed: ${metadataData.summary.failed}`);
+  console.log(`   Error: ${metadataData.summary.error}`);
   console.log(`   Metadata generated: ${metadataPath}`);
 
   console.log('\nhttpYac Action - Phase 2: Markdown Summary');

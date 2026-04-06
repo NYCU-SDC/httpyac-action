@@ -25644,6 +25644,58 @@ module.exports = {
 
 /***/ }),
 
+/***/ 7743:
+/***/ ((module) => {
+
+const ERROR_TYPES = Object.freeze({
+  PROCESS_ERROR: 'PROCESS_ERROR',
+  EXECUTION_ERROR: 'EXECUTION_ERROR',
+  TEST_FAILED: 'TEST_FAILED',
+  UNKNOWN_ERROR: 'UNKNOWN_ERROR',
+  ACTION_ERROR: 'ACTION_ERROR'
+});
+
+const FAILURE_MESSAGES = Object.freeze({
+  PROCESS_ERROR: 'Failed to execute httpyac process.',
+  EXECUTION_ERROR: 'Unexpected error during httpyac execution.',
+  TEST_FAILED: 'httpyac test failed.',
+  UNKNOWN_ERROR: 'httpyac exited with unexpected code.',
+  ACTION_ERROR: 'Action failed before test result could be classified.'
+});
+
+function resolveFailureMessage(failureType, context = {}) {
+  switch (failureType) {
+    case ERROR_TYPES.PROCESS_ERROR:
+      return context.processErrorMessage || FAILURE_MESSAGES.PROCESS_ERROR;
+    case ERROR_TYPES.EXECUTION_ERROR:
+      return FAILURE_MESSAGES.EXECUTION_ERROR;
+    case ERROR_TYPES.TEST_FAILED:
+      return FAILURE_MESSAGES.TEST_FAILED;
+    case ERROR_TYPES.ACTION_ERROR:
+      return context.actionErrorMessage || FAILURE_MESSAGES.ACTION_ERROR;
+    default:
+      return FAILURE_MESSAGES.UNKNOWN_ERROR;
+  }
+}
+
+function isTestFailed(result) {
+  return Boolean(result && !result.success && result.failureType === ERROR_TYPES.TEST_FAILED);
+}
+
+function isErrorResult(result) {
+  return Boolean(result && !result.success && !isTestFailed(result));
+}
+
+module.exports = {
+  ERROR_TYPES,
+  FAILURE_MESSAGES,
+  resolveFailureMessage,
+  isTestFailed,
+  isErrorResult
+};
+
+/***/ }),
+
 /***/ 1712:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -25652,14 +25704,17 @@ const fs = (__nccwpck_require__(9896).promises);
 const path = __nccwpck_require__(6928);
 const { spawnSync } = __nccwpck_require__(5317);
 const yaml = __nccwpck_require__(8815);
+const { ERROR_TYPES, resolveFailureMessage } = __nccwpck_require__(7743);
 
 function classifyHttpYacResult(result) {
   if (result.error) {
     return {
       success: false,
       exitCode: typeof result.status === 'number' ? result.status : null,
-      failureType: 'PROCESS_ERROR',
-      failureMessage: result.error.message || 'Failed to execute httpyac process.'
+      failureType: ERROR_TYPES.PROCESS_ERROR,
+      failureMessage: resolveFailureMessage(ERROR_TYPES.PROCESS_ERROR, {
+        processErrorMessage: result.error.message
+      })
     };
   }
 
@@ -25677,22 +25732,22 @@ function classifyHttpYacResult(result) {
       return {
         success: false,
         exitCode,
-        failureType: 'EXECUTION_ERROR',
-        failureMessage: 'Unexpected error during httpyac execution.'
+        failureType: ERROR_TYPES.EXECUTION_ERROR,
+        failureMessage: resolveFailureMessage(ERROR_TYPES.EXECUTION_ERROR)
       };
     case 20:
       return {
         success: false,
         exitCode,
-        failureType: 'TEST_FAILED',
-        failureMessage: 'httpyac test failed.'
+        failureType: ERROR_TYPES.TEST_FAILED,
+        failureMessage: resolveFailureMessage(ERROR_TYPES.TEST_FAILED)
       };
     default:
       return {
         success: false,
         exitCode,
-        failureType: 'UNKNOWN_ERROR',
-        failureMessage: `httpyac exited with unexpected code ${exitCode}.`
+        failureType: ERROR_TYPES.UNKNOWN_ERROR,
+        failureMessage: resolveFailureMessage(ERROR_TYPES.UNKNOWN_ERROR, { exitCode })
       };
   }
 }
@@ -25784,7 +25839,7 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
     let failureMessage = null;
 
     if (!success) {
-      if (classification.failureType !== 'TEST_FAILED') {
+      if (classification.failureType !== ERROR_TYPES.TEST_FAILED) {
         console.warn(`   ${classification.failureType}: ${classification.failureMessage}`);
       }
       failureMessage = classification.failureMessage;
@@ -25811,8 +25866,10 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
       journeyTitle: config.name || '',
       caseName: testCase.name,
       exitCode: null,
-      failureType: 'ACTION_ERROR',
-      error: err.message,
+      failureType: ERROR_TYPES.ACTION_ERROR,
+      error: resolveFailureMessage(ERROR_TYPES.ACTION_ERROR, {
+        actionErrorMessage: err.message
+      }),
       rawOutputFile: absoluteOutputPath,
       timestamp: new Date().toISOString()
     };
@@ -25832,6 +25889,7 @@ module.exports = {
 
 const fs = (__nccwpck_require__(9896).promises);
 const path = __nccwpck_require__(6928);
+const { ERROR_TYPES, resolveFailureMessage, isTestFailed, isErrorResult } = __nccwpck_require__(7743);
 
 const MAX_BODY_LINES = 1000;
 const IMPORTANT_RESPONSE_HEADERS = new Set([
@@ -26300,17 +26358,15 @@ function classifyFailureFromMetadata(testMeta = {}) {
     return { failed: 0, errored: 0 };
   }
 
-  switch (testMeta.failureType) {
-    case 'TEST_FAILED':
-      return { failed: 1, errored: 0 };
-    case 'EXECUTION_ERROR':
-    case 'PROCESS_ERROR':
-    case 'ACTION_ERROR':
-    case 'UNKNOWN_ERROR':
-      return { failed: 0, errored: 1 };
-    default:
-      return { failed: 0, errored: 1 };
+  if (isTestFailed(testMeta)) {
+    return { failed: 1, errored: 0 };
   }
+
+  if (isErrorResult(testMeta)) {
+    return { failed: 0, errored: 1 };
+  }
+
+  return { failed: 0, errored: 1 };
 }
 
 function getMetadataFailureMessage(testMeta = {}) {
@@ -26318,13 +26374,14 @@ function getMetadataFailureMessage(testMeta = {}) {
     return null;
   }
 
-  const details = [];
-
-  if (testMeta.failureType !== "TEST_FAILED") {
-    details.push(`${testMeta.failureType}: ${testMeta.error}`);
+  if (isTestFailed(testMeta)) {
+    return null;
   }
 
-  return details.length > 0 ? details.join('\n') : null;
+  const failureType = testMeta.failureType || ERROR_TYPES.UNKNOWN_ERROR;
+  const message = testMeta.error || resolveFailureMessage(failureType, { exitCode: testMeta.exitCode });
+
+  return `${failureType}: ${message}`;
 }
 
 async function loadReports(outputDir) {
@@ -36973,6 +37030,8 @@ const fs = (__nccwpck_require__(9896).promises);
 const path = __nccwpck_require__(6928);
 const { findJourneysYaml, parseJourneyYaml, runHttpYacTest } = __nccwpck_require__(1712);
 const { loadReports, buildMarkdownSummary, writeSummary } = __nccwpck_require__(3884);
+const { isTestFailed, isErrorResult } = __nccwpck_require__(7743);
+const { error } = __nccwpck_require__(4236);
 
 const HTTPYAC_VERSION = '6.16.7';
 
@@ -37066,12 +37125,15 @@ async function main() {
   
   // Create metadata.json
   const metadataPath = path.join(outputDir, 'metadata.json');
+  const failedCount = results.filter(isTestFailed).length;
+  const errorCount = results.filter(isErrorResult).length;
   const metadataData = {
     timestamp: new Date().toISOString(),
     summary: {
       total: results.length,
       successful: results.filter(r => r.success).length,
-      failed: results.filter(r => !r.success).length
+      failed: failedCount,
+      error: errorCount
     },
     tests: results
   };
@@ -37082,6 +37144,7 @@ async function main() {
   console.log(`   Total Test Cases: ${metadataData.summary.total}`);
   console.log(`   Successful: ${metadataData.summary.successful}`);
   console.log(`   Failed: ${metadataData.summary.failed}`);
+  console.log(`   Error: ${metadataData.summary.error}`);
   console.log(`   Metadata generated: ${metadataPath}`);
 
   console.log('\nhttpYac Action - Phase 2: Markdown Summary');

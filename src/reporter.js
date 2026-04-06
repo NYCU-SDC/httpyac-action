@@ -1,5 +1,6 @@
 const fs = require('fs').promises;
 const path = require('path');
+const { ERROR_TYPES, resolveFailureMessage, isTestFailed, isErrorResult } = require('./error-types');
 
 const MAX_BODY_LINES = 1000;
 const IMPORTANT_RESPONSE_HEADERS = new Set([
@@ -468,17 +469,15 @@ function classifyFailureFromMetadata(testMeta = {}) {
     return { failed: 0, errored: 0 };
   }
 
-  switch (testMeta.failureType) {
-    case 'TEST_FAILED':
-      return { failed: 1, errored: 0 };
-    case 'EXECUTION_ERROR':
-    case 'PROCESS_ERROR':
-    case 'ACTION_ERROR':
-    case 'UNKNOWN_ERROR':
-      return { failed: 0, errored: 1 };
-    default:
-      return { failed: 0, errored: 1 };
+  if (isTestFailed(testMeta)) {
+    return { failed: 1, errored: 0 };
   }
+
+  if (isErrorResult(testMeta)) {
+    return { failed: 0, errored: 1 };
+  }
+
+  return { failed: 0, errored: 1 };
 }
 
 function getMetadataFailureMessage(testMeta = {}) {
@@ -486,13 +485,14 @@ function getMetadataFailureMessage(testMeta = {}) {
     return null;
   }
 
-  const details = [];
-
-  if (testMeta.failureType !== "TEST_FAILED") {
-    details.push(`${testMeta.failureType}: ${testMeta.error}`);
+  if (isTestFailed(testMeta)) {
+    return null;
   }
 
-  return details.length > 0 ? details.join('\n') : null;
+  const failureType = testMeta.failureType || ERROR_TYPES.UNKNOWN_ERROR;
+  const message = testMeta.error || resolveFailureMessage(failureType, { exitCode: testMeta.exitCode });
+
+  return `${failureType}: ${message}`;
 }
 
 async function loadReports(outputDir) {

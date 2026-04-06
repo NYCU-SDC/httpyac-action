@@ -4,14 +4,17 @@ const fs = require('fs').promises;
 const path = require('path');
 const { spawnSync } = require('child_process');
 const yaml = require('yaml');
+const { ERROR_TYPES, resolveFailureMessage } = require('./error-types');
 
 function classifyHttpYacResult(result) {
   if (result.error) {
     return {
       success: false,
       exitCode: typeof result.status === 'number' ? result.status : null,
-      failureType: 'PROCESS_ERROR',
-      failureMessage: result.error.message || 'Failed to execute httpyac process.'
+      failureType: ERROR_TYPES.PROCESS_ERROR,
+      failureMessage: resolveFailureMessage(ERROR_TYPES.PROCESS_ERROR, {
+        processErrorMessage: result.error.message
+      })
     };
   }
 
@@ -29,22 +32,22 @@ function classifyHttpYacResult(result) {
       return {
         success: false,
         exitCode,
-        failureType: 'EXECUTION_ERROR',
-        failureMessage: 'Unexpected error during httpyac execution.'
+        failureType: ERROR_TYPES.EXECUTION_ERROR,
+        failureMessage: resolveFailureMessage(ERROR_TYPES.EXECUTION_ERROR)
       };
     case 20:
       return {
         success: false,
         exitCode,
-        failureType: 'TEST_FAILED',
-        failureMessage: 'httpyac test failed.'
+        failureType: ERROR_TYPES.TEST_FAILED,
+        failureMessage: resolveFailureMessage(ERROR_TYPES.TEST_FAILED)
       };
     default:
       return {
         success: false,
         exitCode,
-        failureType: 'UNKNOWN_ERROR',
-        failureMessage: `httpyac exited with unexpected code ${exitCode}.`
+        failureType: ERROR_TYPES.UNKNOWN_ERROR,
+        failureMessage: resolveFailureMessage(ERROR_TYPES.UNKNOWN_ERROR, { exitCode })
       };
   }
 }
@@ -136,7 +139,7 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
     let failureMessage = null;
 
     if (!success) {
-      if (classification.failureType !== 'TEST_FAILED') {
+      if (classification.failureType !== ERROR_TYPES.TEST_FAILED) {
         console.warn(`   ${classification.failureType}: ${classification.failureMessage}`);
       }
       failureMessage = classification.failureMessage;
@@ -163,8 +166,10 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
       journeyTitle: config.name || '',
       caseName: testCase.name,
       exitCode: null,
-      failureType: 'ACTION_ERROR',
-      error: err.message,
+      failureType: ERROR_TYPES.ACTION_ERROR,
+      error: resolveFailureMessage(ERROR_TYPES.ACTION_ERROR, {
+        actionErrorMessage: err.message
+      }),
       rawOutputFile: absoluteOutputPath,
       timestamp: new Date().toISOString()
     };
