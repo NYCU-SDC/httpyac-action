@@ -26237,7 +26237,6 @@ function buildReportSection(report, reportIndex) {
     sectionLines.push('');
   }
 
-  sectionLines.push(`**${report.total}** tests were completed in **${report.duration}** with **${report.passed}** passed, **${report.failed}** failed, **${report.errored}** errored and **${report.skipped}** skipped.`);
   sectionLines.push('|Test Name|Passed|Failed|Errored|Skipped|Time|');
   sectionLines.push('|:---|---:|---:|---:|---:|---:|');
   requestRows.forEach((row) => sectionLines.push(row.row));
