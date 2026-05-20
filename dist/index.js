@@ -26105,12 +26105,18 @@ function getHttpProtocol(response = {}) {
   return 'httpYac/6.16.7'; // Default to httpYac version if protocol is not provided
 }
 
+function hasValue(value) {
+  return value !== undefined && value !== null && value !== '';
+}
+
 function formatHttpRequestBlock(responseRequest = {}, response = {}) {
-  const method = responseRequest.method || 'N/A';
-  const requestUrl = responseRequest.url || null;
-  const protocol = getHttpProtocol(response);
-  const target = getRequestTarget(requestUrl);
-  const requestLine = `${method} ${target} ${protocol}`;
+  const method = hasValue(responseRequest.method) ? String(responseRequest.method) : null;
+  const requestUrl = hasValue(responseRequest.url) ? responseRequest.url : null;
+  const protocol = hasValue(response.protocol) ? response.protocol : null;
+  const target = requestUrl ? getRequestTarget(requestUrl) : null;
+  const requestLine = method && target
+    ? [method, target, protocol].filter(Boolean).join(' ')
+    : null;
 
   const headers = { ...(responseRequest.headers || {}) };
   const host = getHostFromUrl(requestUrl);
@@ -26120,21 +26126,70 @@ function formatHttpRequestBlock(responseRequest = {}, response = {}) {
 
   const headerLines = Object.entries(headers).map(([key, value]) => `${toHeaderName(key)}: ${value}`);
   const bodyText = normalizeBodyText(responseRequest.body);
+  const hasBody = hasValue(bodyText);
 
-  return [requestLine, ...headerLines, '', bodyText].join('\n').trimEnd();
+  if (!requestLine && headerLines.length === 0 && !hasBody) {
+    return [
+      '[request information unavailable]',
+      '# method: unavailable',
+      '# url: unavailable',
+      '# protocol: unavailable'
+    ].join('\n');
+  }
+
+  const lines = [];
+  if (requestLine) {
+    lines.push(requestLine);
+  } else {
+    lines.push('[request line unavailable]');
+    lines.push(`# method: ${method || 'unavailable'}`);
+    lines.push(`# url: ${requestUrl || 'unavailable'}`);
+    lines.push(`# protocol: ${protocol || 'unavailable'}`);
+  }
+
+  lines.push(...headerLines);
+  if (hasBody) {
+    lines.push('');
+    lines.push(bodyText);
+  }
+
+  return lines.join('\n').trimEnd();
 }
 
 function formatHttpResponseBlock(response = {}) {
-  const protocol = getHttpProtocol(response);
-  const statusCode = response.statusCode ?? 'N/A';
-  const statusMessage = response.statusMessage || '';
-  const statusLine = `${protocol} ${statusCode} ${statusMessage}`.trim();
+  const protocol = hasValue(response.protocol) ? response.protocol : null;
+  const statusCode = hasValue(response.statusCode) ? String(response.statusCode) : null;
+  const statusMessage = hasValue(response.statusMessage) ? String(response.statusMessage) : null;
+  const statusLine = protocol && statusCode
+    ? [protocol, statusCode, statusMessage].filter(Boolean).join(' ')
+    : null;
 
   const headers = response.headers || {};
   const headerLines = Object.entries(headers).map(([key, value]) => `${toHeaderName(key)}: ${value}`);
   const bodyText = normalizeBodyText(response.body);
+  const hasBody = hasValue(bodyText);
 
-  return [statusLine, ...headerLines, '', bodyText].join('\n').trimEnd();
+  if (!statusLine && headerLines.length === 0 && !hasBody) {
+    return '[response information unavailable]';
+  }
+
+  const lines = [];
+  if (statusLine) {
+    lines.push(statusLine);
+  } else {
+    lines.push('[response status unavailable]');
+    lines.push(`# protocol: ${protocol || 'unavailable'}`);
+    lines.push(`# status_code: ${statusCode || 'unavailable'}`);
+    lines.push(`# status_message: ${statusMessage || 'unavailable'}`);
+  }
+
+  lines.push(...headerLines);
+  if (hasBody) {
+    lines.push('');
+    lines.push(bodyText);
+  }
+
+  return lines.join('\n').trimEnd();
 }
 
 function formatHeaders(headers, onlyImportant = false) {
@@ -26297,7 +26352,7 @@ function buildReportSection(report, reportIndex) {
 
   sectionLines.push('|Test Name|Passed|Failed|Errored|Skipped|Time|');
   sectionLines.push('|:---|---:|---:|---:|---:|---:|');
-  requestRows.forEach((row) => sectionLines.push(row.row));
+  requestRows.slice().reverse().forEach((row) => sectionLines.push(row.row));
 
   const failedRequests = report.requests
     .map((request, idx) => ({ request, idx }))
@@ -26306,7 +26361,7 @@ function buildReportSection(report, reportIndex) {
       return requestSummary.failed > 0 || requestSummary.errored > 0;
     });
 
-  for (const { request, idx } of failedRequests) {
+  for (const { request, idx } of failedRequests.slice().reverse()) {
     sectionLines.push('');
     sectionLines.push(buildRequestFailureDetails(request, reportIndex, idx, requestNameByIndex[idx]));
   }
