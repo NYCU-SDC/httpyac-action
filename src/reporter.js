@@ -392,7 +392,7 @@ function buildReportSection(report, reportIndex) {
   }
 
   if (report.description) {
-    sectionLines.push(`> ${report.description}`);
+    sectionLines.push(`${report.description}`);
     sectionLines.push('');
   }
   if (report.metadataFailure) {
