@@ -1,0 +1,26 @@
+name: 'httpYac Action'
+description: 'Execute httpYac CLI tests for user journeys and generate JSON reports'
+author: 'pylin'
+
+branding:
+  icon: 'check-circle'
+  color: 'green'
+
+inputs:
+  scenarios-path:
+    description: 'Path to the scenarios directory containing user journeys'
+    required: true
+  output-dir:
+    description: 'Directory to save JSON output files'
+    required: false
+    default: './httpyac-results'
+  env:
+    description: 'Environment variables to pass to httpYac tests'
+    required: true
+    default: |
+      BASE_URL=http://127.0.0.1:4010/api
+      LOGIN_USER_ID=00000000-0000-0000-0000-000000000001
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

@@ -1,0 +1,16 @@
+{
+  "name": "httpyac-action",
+  "version": "1.0.0",
+  "description": "GitHub Actions for executing httpYac tests and generating reports",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "ncc build src/index.js -o dist --license licenses.txt"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "yaml": "^2.3.4"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.1"
+  }
+}
