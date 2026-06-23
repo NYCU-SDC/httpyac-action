@@ -519,6 +519,70 @@ function buildOverviewSection(reports, globalTotals) {
   return lines.join('\n');
 }
 
+function buildSelectionSection(selection) {
+  if (!selection) {
+    return '';
+  }
+
+  const lines = [];
+  lines.push('## QA Selection');
+  lines.push('');
+  lines.push(`- Mode: \`${selection.mode}\``);
+  lines.push(`- Selected journeys: ${(selection.journeys || []).map((journey) => `\`${journey}\``).join(', ') || '_None_'}`);
+
+  if (Array.isArray(selection.fallbacks) && selection.fallbacks.length > 0) {
+    lines.push('');
+    lines.push('**Fallbacks**');
+    for (const fallback of selection.fallbacks) {
+      if (fallback.type === 'large_change') {
+        lines.push(`- \`${fallback.type}\`: ${fallback.changed_file_count} changed files exceeded threshold ${fallback.threshold}`);
+      } else if (fallback.type === 'unknown_change') {
+        lines.push(`- \`${fallback.type}\`: unmatched files triggered full selection`);
+      } else {
+        lines.push(`- \`${fallback.type || 'unknown'}\``);
+      }
+    }
+  }
+
+  const changedFileReasons = (selection.reasons || []).filter((reason) => reason.type === 'changed_file');
+  if (changedFileReasons.length > 0) {
+    lines.push('');
+    lines.push('**Matched Rules**');
+    lines.push('|Changed File|Rule|Matched Paths|Selected Journeys|');
+    lines.push('|:---|:---|:---|:---|');
+    for (const reason of changedFileReasons) {
+      const fileLabel = reason.previous_file
+        ? `\`${reason.previous_file}\` -> \`${reason.file}\``
+        : `\`${reason.file}\``;
+      const matchedPathLabels = Array.isArray(reason.matched_file_paths) && reason.matched_file_paths.length > 0
+        ? reason.matched_file_paths.map((match) => `\`${match.field}:${match.path}\` matched \`${match.pattern}\``)
+        : (reason.matched_paths || []).map((item) => `\`${item}\``);
+      lines.push(
+        `|${fileLabel}|\`${reason.matched_rule}\`|${matchedPathLabels.join('<br>')}|${(reason.selected_journeys || []).map((item) => `\`${item}\``).join('<br>')}|`
+      );
+    }
+  }
+
+  const labelReasons = (selection.reasons || []).filter((reason) => reason.type === 'label');
+  if (labelReasons.length > 0) {
+    lines.push('');
+    lines.push('**Matched Labels**');
+    for (const reason of labelReasons) {
+      lines.push(`- \`${reason.label}\` selected ${(reason.selected_journeys || []).map((journey) => `\`${journey}\``).join(', ')}`);
+    }
+  }
+
+  if (Array.isArray(selection.unmatched_files) && selection.unmatched_files.length > 0) {
+    lines.push('');
+    lines.push('**Unmatched Files**');
+    for (const file of selection.unmatched_files) {
+      lines.push(`- \`${file}\``);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 function classifyFailureFromMetadata(testMeta = {}) {
   if (testMeta.success) {
     return { failed: 0, errored: 0 };
@@ -614,7 +678,7 @@ async function loadReports(outputDir) {
   return reports;
 }
 
-function buildMarkdownSummary(reports) {
+function buildMarkdownSummary(reports, selection = null) {
   const totals = reports.reduce(
     (acc, report) => {
       acc.passed += report.passed;
@@ -629,6 +693,11 @@ function buildMarkdownSummary(reports) {
   const lines = [];
   lines.push('# httpYac Test Summary');
   lines.push('');
+  const selectionSection = buildSelectionSection(selection);
+  if (selectionSection) {
+    lines.push(selectionSection);
+    lines.push('');
+  }
   lines.push(buildOverviewSection(reports, totals));
   lines.push('');
 
@@ -669,5 +738,6 @@ async function writeSummary(markdown, outputDir) {
 module.exports = {
   loadReports,
   buildMarkdownSummary,
+  buildSelectionSection,
   writeSummary
 };

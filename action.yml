@@ -14,6 +14,30 @@ inputs:
     description: 'Directory to save JSON output files'
     required: false
     default: './httpyac-results'
+  run-mode:
+    description: 'Execution mode: all, affected, or explicit'
+    required: false
+    default: 'all'
+  manifest-path:
+    description: 'Path to selector manifest.yaml'
+    required: false
+    default: ''
+  changed-files-path:
+    description: 'Path to standardized changed-files JSON'
+    required: false
+    default: ''
+  labels:
+    description: 'PR labels as JSON, comma-separated, or newline-separated values'
+    required: false
+    default: ''
+  journeys:
+    description: 'Explicit journeys as JSON, comma-separated, or newline-separated values; used with run-mode=explicit'
+    required: false
+    default: ''
+  smoke-path:
+    description: 'Path to smoke .http files. Defaults to ../smoke from scenarios-path when available.'
+    required: false
+    default: ''
   env:
     description: 'Environment variables to pass to httpYac tests'
     required: true

@@ -25785,6 +25785,35 @@ async function findJourneysYaml(baseDir) {
   return [journeys, skippedJourneys];
 }
 
+async function findSmokeHttpFiles(smokeDir) {
+  const smokeTests = [];
+
+  try {
+    const entries = await fs.readdir(smokeDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.http')) {
+        smokeTests.push({
+          name: path.basename(entry.name, '.http'),
+          path: smokeDir,
+          config: {
+            name: 'Smoke',
+            description: 'Minimal smoke checks',
+            cases: [{
+              name: path.basename(entry.name, '.http'),
+              description: 'Smoke check',
+              path: entry.name
+            }]
+          }
+        });
+      }
+    }
+  } catch (err) {
+    throw new Error(`Failed to read smoke path ${smokeDir}: ${err.message}`);
+  }
+
+  return smokeTests;
+}
+
 async function parseJourneyYaml(filepath) {
   try {
     const content = await fs.readFile(filepath, 'utf8');
@@ -25818,7 +25847,10 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
     for (const [key, value] of Object.entries(env || {})) {
       args.push('--var', `${key}=${value}`);
     }
-    args.push('--name', testCase.test, '--json', '--output', 'exchange', '--output-failed', 'exchange');
+    if (testCase.test) {
+      args.push('--name', testCase.test);
+    }
+    args.push('--json', '--output', 'exchange', '--output-failed', 'exchange');
 
 
     const outputFd = await fs.open(absoluteOutputPath, 'w');
@@ -25878,9 +25910,11 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
 
 module.exports = {
   findJourneysYaml,
+  findSmokeHttpFiles,
   parseJourneyYaml,
   runHttpYacTest
 };
+
 
 /***/ }),
 
@@ -26408,6 +26442,70 @@ function buildOverviewSection(reports, globalTotals) {
   return lines.join('\n');
 }
 
+function buildSelectionSection(selection) {
+  if (!selection) {
+    return '';
+  }
+
+  const lines = [];
+  lines.push('## QA Selection');
+  lines.push('');
+  lines.push(`- Mode: \`${selection.mode}\``);
+  lines.push(`- Selected journeys: ${(selection.journeys || []).map((journey) => `\`${journey}\``).join(', ') || '_None_'}`);
+
+  if (Array.isArray(selection.fallbacks) && selection.fallbacks.length > 0) {
+    lines.push('');
+    lines.push('**Fallbacks**');
+    for (const fallback of selection.fallbacks) {
+      if (fallback.type === 'large_change') {
+        lines.push(`- \`${fallback.type}\`: ${fallback.changed_file_count} changed files exceeded threshold ${fallback.threshold}`);
+      } else if (fallback.type === 'unknown_change') {
+        lines.push(`- \`${fallback.type}\`: unmatched files triggered full selection`);
+      } else {
+        lines.push(`- \`${fallback.type || 'unknown'}\``);
+      }
+    }
+  }
+
+  const changedFileReasons = (selection.reasons || []).filter((reason) => reason.type === 'changed_file');
+  if (changedFileReasons.length > 0) {
+    lines.push('');
+    lines.push('**Matched Rules**');
+    lines.push('|Changed File|Rule|Matched Paths|Selected Journeys|');
+    lines.push('|:---|:---|:---|:---|');
+    for (const reason of changedFileReasons) {
+      const fileLabel = reason.previous_file
+        ? `\`${reason.previous_file}\` -> \`${reason.file}\``
+        : `\`${reason.file}\``;
+      const matchedPathLabels = Array.isArray(reason.matched_file_paths) && reason.matched_file_paths.length > 0
+        ? reason.matched_file_paths.map((match) => `\`${match.field}:${match.path}\` matched \`${match.pattern}\``)
+        : (reason.matched_paths || []).map((item) => `\`${item}\``);
+      lines.push(
+        `|${fileLabel}|\`${reason.matched_rule}\`|${matchedPathLabels.join('<br>')}|${(reason.selected_journeys || []).map((item) => `\`${item}\``).join('<br>')}|`
+      );
+    }
+  }
+
+  const labelReasons = (selection.reasons || []).filter((reason) => reason.type === 'label');
+  if (labelReasons.length > 0) {
+    lines.push('');
+    lines.push('**Matched Labels**');
+    for (const reason of labelReasons) {
+      lines.push(`- \`${reason.label}\` selected ${(reason.selected_journeys || []).map((journey) => `\`${journey}\``).join(', ')}`);
+    }
+  }
+
+  if (Array.isArray(selection.unmatched_files) && selection.unmatched_files.length > 0) {
+    lines.push('');
+    lines.push('**Unmatched Files**');
+    for (const file of selection.unmatched_files) {
+      lines.push(`- \`${file}\``);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 function classifyFailureFromMetadata(testMeta = {}) {
   if (testMeta.success) {
     return { failed: 0, errored: 0 };
@@ -26503,7 +26601,7 @@ async function loadReports(outputDir) {
   return reports;
 }
 
-function buildMarkdownSummary(reports) {
+function buildMarkdownSummary(reports, selection = null) {
   const totals = reports.reduce(
     (acc, report) => {
       acc.passed += report.passed;
@@ -26518,6 +26616,11 @@ function buildMarkdownSummary(reports) {
   const lines = [];
   lines.push('# httpYac Test Summary');
   lines.push('');
+  const selectionSection = buildSelectionSection(selection);
+  if (selectionSection) {
+    lines.push(selectionSection);
+    lines.push('');
+  }
   lines.push(buildOverviewSection(reports, totals));
   lines.push('');
 
@@ -26558,7 +26661,454 @@ async function writeSummary(markdown, outputDir) {
 module.exports = {
   loadReports,
   buildMarkdownSummary,
+  buildSelectionSection,
   writeSummary
+};
+
+
+/***/ }),
+
+/***/ 7020:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const fs = (__nccwpck_require__(9896).promises);
+const path = __nccwpck_require__(6928);
+const yaml = __nccwpck_require__(8815);
+
+function unique(values) {
+  return [...new Set(values)];
+}
+
+function escapeRegex(value) {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+}
+
+function globToRegex(pattern) {
+  let result = '';
+  const value = String(pattern);
+
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index];
+    const next = value[index + 1];
+
+    if (char === '*' && next === '*') {
+      result += '.*';
+      index++;
+    } else if (char === '*') {
+      result += '[^/]*';
+    } else {
+      result += escapeRegex(char);
+    }
+  }
+
+  return new RegExp(`^${result}$`);
+}
+
+function matchesPath(filePath, pattern) {
+  return globToRegex(pattern).test(filePath);
+}
+
+async function loadManifest(manifestPath) {
+  const content = await fs.readFile(manifestPath, 'utf8');
+  const manifest = yaml.parse(content);
+
+  if (!manifest || typeof manifest !== 'object') {
+    throw new Error('Manifest must be a YAML object');
+  }
+
+  return manifest;
+}
+
+async function loadChangedFiles(changedFilesPath) {
+  const content = await fs.readFile(changedFilesPath, 'utf8');
+  const parsed = JSON.parse(content);
+  const files = Array.isArray(parsed) ? parsed : parsed.files;
+
+  if (!Array.isArray(files)) {
+    throw new Error('Changed files JSON must be an array or an object with a files array');
+  }
+
+  return files.map((file) => {
+    if (typeof file === 'string') {
+      return { path: file, status: 'modified' };
+    }
+
+    if (!file || typeof file.path !== 'string' || !file.path.trim()) {
+      throw new Error('Each changed file must include a non-empty path');
+    }
+
+    return {
+      path: file.path,
+      previousPath: file.previousPath || file.previous_path || '',
+      status: file.status || 'modified'
+    };
+  });
+}
+
+function parseLabels(labelInput) {
+  if (!labelInput) {
+    return [];
+  }
+
+  const trimmed = labelInput.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    const parsed = JSON.parse(trimmed);
+    const labels = Array.isArray(parsed) ? parsed : parsed.labels;
+    if (!Array.isArray(labels)) {
+      throw new Error('Labels JSON must be an array or an object with a labels array');
+    }
+    return labels.map(String);
+  }
+
+  return trimmed
+    .split(/[\n,]/)
+    .map((label) => label.trim())
+    .filter(Boolean);
+}
+
+function parseListInput(value, fieldName) {
+  if (!value) {
+    return [];
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  if (trimmed.startsWith('[')) {
+    const parsed = JSON.parse(trimmed);
+    if (!Array.isArray(parsed)) {
+      throw new Error(`${fieldName} JSON must be an array`);
+    }
+    return parsed.map(String);
+  }
+
+  return trimmed
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function resolveEntry(manifest, entry, context) {
+  const selected = [];
+  const selectedGroups = [];
+
+  if (Array.isArray(entry.journeys)) {
+    selected.push(...entry.journeys);
+  }
+
+  if (entry.group) {
+    const group = manifest.journey_groups && manifest.journey_groups[entry.group];
+    if (!group) {
+      throw new Error(`${context} references unknown journey group: ${entry.group}`);
+    }
+    selectedGroups.push(entry.group);
+    selected.push(...(group.journeys || []));
+  }
+
+  return {
+    journeys: selected,
+    groups: selectedGroups
+  };
+}
+
+async function getKnownJourneys(scenariosPath) {
+  const knownJourneys = new Set(['smoke']);
+
+  const entries = await fs.readdir(scenariosPath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      try {
+        await fs.access(path.join(scenariosPath, entry.name, 'journey.yaml'));
+        knownJourneys.add(entry.name);
+      } catch (_err) {
+        // Directory without journey.yaml is not a selectable user journey.
+      }
+    }
+  }
+
+  return knownJourneys;
+}
+
+async function validateManifest(manifest, scenariosPath) {
+  if (!manifest.defaults || typeof manifest.defaults !== 'object') {
+    throw new Error('Manifest must define defaults');
+  }
+
+  if (!Array.isArray(manifest.defaults.always_run)) {
+    throw new Error('Manifest defaults.always_run must be an array');
+  }
+
+  if (!manifest.journey_groups || typeof manifest.journey_groups !== 'object') {
+    throw new Error('Manifest must define journey_groups');
+  }
+
+  if (!manifest.journey_groups.full || !Array.isArray(manifest.journey_groups.full.journeys)) {
+    throw new Error('Manifest must define journey_groups.full.journeys');
+  }
+
+  if (!Array.isArray(manifest.rules)) {
+    throw new Error('Manifest rules must be an array');
+  }
+
+  let knownJourneys;
+  try {
+    knownJourneys = await getKnownJourneys(scenariosPath);
+  } catch (err) {
+    throw new Error(`Failed to read scenarios path for manifest validation: ${err.message}`);
+  }
+
+  const validateEntry = (entry, context) => {
+    const hasJourneys = Array.isArray(entry.journeys);
+    const hasGroup = Boolean(entry.group);
+    if (!hasJourneys && !hasGroup) {
+      throw new Error(`${context} must define journeys or group`);
+    }
+    if (hasGroup && !manifest.journey_groups[entry.group]) {
+      throw new Error(`${context} references unknown journey group: ${entry.group}`);
+    }
+    if (hasJourneys) {
+      for (const journey of entry.journeys) {
+        if (!knownJourneys.has(journey)) {
+          throw new Error(`${context} references unknown journey: ${journey}`);
+        }
+      }
+    }
+  };
+
+  for (const journey of manifest.defaults.always_run) {
+    if (!knownJourneys.has(journey)) {
+      throw new Error(`defaults.always_run references unknown journey: ${journey}`);
+    }
+  }
+
+  for (const [groupName, group] of Object.entries(manifest.journey_groups)) {
+    if (!Array.isArray(group.journeys)) {
+      throw new Error(`journey_groups.${groupName}.journeys must be an array`);
+    }
+    validateEntry(group, `journey_groups.${groupName}`);
+  }
+
+  for (const [label, entry] of Object.entries(manifest.labels || {})) {
+    validateEntry(entry, `labels.${label}`);
+  }
+
+  for (const rule of manifest.rules) {
+    if (!rule || typeof rule.name !== 'string' || !rule.name.trim()) {
+      throw new Error('Each rule must define a non-empty name');
+    }
+    if (!Array.isArray(rule.paths) || rule.paths.length === 0) {
+      throw new Error(`Rule ${rule.name} must define at least one path`);
+    }
+    validateEntry(rule, `rules.${rule.name}`);
+  }
+
+  return knownJourneys;
+}
+
+function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys }) {
+  const selected = new Set();
+  const reasons = [];
+  const unmatchedFiles = [];
+  const fallbacks = [];
+
+  const addJourneys = (journeys) => {
+    for (const journey of journeys) {
+      selected.add(journey);
+    }
+  };
+
+  const addGroup = (groupName, reasonType, source) => {
+    const entry = { group: groupName };
+    const resolved = resolveEntry(manifest, entry, `${reasonType}.${source}`);
+    addJourneys(resolved.journeys);
+    return resolved;
+  };
+
+  const alwaysRun = manifest.defaults.always_run || [];
+  addJourneys(alwaysRun);
+  if (alwaysRun.length > 0) {
+    reasons.push({
+      type: 'default',
+      source: 'always_run',
+      selected_journeys: alwaysRun
+    });
+  }
+
+  if (mode === 'all') {
+    const resolved = addGroup('full', 'mode', 'all');
+    reasons.push({
+      type: 'mode',
+      mode,
+      selected_groups: resolved.groups,
+      selected_journeys: resolved.journeys
+    });
+    return {
+      mode: 'all',
+      journeys: unique([...selected]),
+      reasons,
+      unmatched_files: [],
+      fallbacks: []
+    };
+  }
+
+  for (const label of labels) {
+    const entry = manifest.labels && manifest.labels[label];
+    if (!entry) {
+      continue;
+    }
+    const resolved = resolveEntry(manifest, entry, `labels.${label}`);
+    addJourneys(resolved.journeys);
+    reasons.push({
+      type: 'label',
+      label,
+      selected_groups: resolved.groups,
+      selected_journeys: resolved.journeys
+    });
+  }
+
+  if (mode === 'explicit') {
+    if (explicitJourneys.length > 0) {
+      addJourneys(explicitJourneys);
+      reasons.push({
+        type: 'explicit',
+        source: 'journeys',
+        selected_journeys: explicitJourneys
+      });
+    }
+
+    return {
+      mode: 'explicit',
+      journeys: unique([...selected]),
+      reasons,
+      unmatched_files: [],
+      fallbacks: []
+    };
+  }
+
+  const threshold = Number(manifest.defaults.large_change_threshold || 0);
+  if (threshold > 0 && changedFiles.length > threshold) {
+    const resolved = addGroup('full', 'fallback', 'large_change');
+    fallbacks.push({
+      type: 'large_change',
+      changed_file_count: changedFiles.length,
+      threshold,
+      selected_groups: resolved.groups,
+      selected_journeys: resolved.journeys
+    });
+    return {
+      mode: 'full',
+      journeys: unique([...selected]),
+      reasons,
+      unmatched_files: [],
+      fallbacks
+    };
+  }
+
+  for (const file of changedFiles) {
+    const matchedRules = [];
+    const candidatePaths = [
+      { field: 'path', value: file.path },
+      { field: 'previousPath', value: file.previousPath }
+    ].filter((candidate) => candidate.value);
+
+    for (const rule of manifest.rules) {
+      const matches = [];
+      for (const candidate of candidatePaths) {
+        for (const pattern of rule.paths) {
+          if (matchesPath(candidate.value, pattern)) {
+            matches.push({
+              field: candidate.field,
+              path: candidate.value,
+              pattern
+            });
+          }
+        }
+      }
+
+      if (matches.length === 0) {
+        continue;
+      }
+
+      const resolved = resolveEntry(manifest, rule, `rules.${rule.name}`);
+      addJourneys(resolved.journeys);
+      matchedRules.push(rule.name);
+      reasons.push({
+        type: 'changed_file',
+        file: file.path,
+        previous_file: file.previousPath || '',
+        status: file.status,
+        matched_rule: rule.name,
+        matched_paths: unique(matches.map((match) => match.pattern)),
+        matched_file_paths: matches,
+        selected_groups: resolved.groups,
+        selected_journeys: resolved.journeys
+      });
+    }
+
+    if (matchedRules.length === 0) {
+      unmatchedFiles.push(file.path);
+    }
+  }
+
+  if (unmatchedFiles.length > 0 && manifest.defaults.unknown_change_policy === 'full') {
+    const resolved = addGroup('full', 'fallback', 'unknown_change');
+    fallbacks.push({
+      type: 'unknown_change',
+      files: unmatchedFiles,
+      selected_groups: resolved.groups,
+      selected_journeys: resolved.journeys
+    });
+    return {
+      mode: 'full',
+      journeys: unique([...selected]),
+      reasons,
+      unmatched_files: unmatchedFiles,
+      fallbacks
+    };
+  }
+
+  return {
+    mode: 'affected',
+    journeys: unique([...selected]),
+    reasons,
+    unmatched_files: unmatchedFiles,
+    fallbacks
+  };
+}
+
+async function selectJourneys(options) {
+  const manifest = await loadManifest(options.manifestPath);
+  const changedFiles = options.changedFilesPath ? await loadChangedFiles(options.changedFilesPath) : [];
+  const labels = parseLabels(options.labelsInput || '');
+  const explicitJourneys = parseListInput(options.journeysInput || '', 'journeys');
+  const mode = options.mode || 'affected';
+
+  if (!['all', 'affected', 'explicit'].includes(mode)) {
+    throw new Error(`Invalid run mode: ${mode}`);
+  }
+
+  const knownJourneys = await validateManifest(manifest, options.scenariosPath);
+  for (const journey of explicitJourneys) {
+    if (!knownJourneys.has(journey)) {
+      throw new Error(`Explicit journey does not exist: ${journey}`);
+    }
+  }
+
+  return buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys });
+}
+
+module.exports = {
+  selectJourneys,
+  loadChangedFiles,
+  parseLabels,
+  parseListInput,
+  matchesPath
 };
 
 
@@ -37083,10 +37633,10 @@ var __webpack_exports__ = {};
 const core = __nccwpck_require__(7484);
 const fs = (__nccwpck_require__(9896).promises);
 const path = __nccwpck_require__(6928);
-const { findJourneysYaml, parseJourneyYaml, runHttpYacTest } = __nccwpck_require__(1712);
+const { findJourneysYaml, findSmokeHttpFiles, parseJourneyYaml, runHttpYacTest } = __nccwpck_require__(1712);
 const { loadReports, buildMarkdownSummary, writeSummary } = __nccwpck_require__(3884);
 const { isTestFailed, isErrorResult } = __nccwpck_require__(7743);
-const { error } = __nccwpck_require__(4236);
+const { selectJourneys } = __nccwpck_require__(7020);
 
 const HTTPYAC_VERSION = '6.16.7';
 
@@ -37129,12 +37679,22 @@ function parseEnvInput(envInput) {
 async function main() {
   const scenariosPath = core.getInput('scenarios-path', { required: true });
   const outputDir = core.getInput('output-dir', { required: false }) || './httpyac-results';
+  const runMode = core.getInput('run-mode', { required: false }) || 'all';
+  const manifestPath = core.getInput('manifest-path', { required: false });
+  const changedFilesPath = core.getInput('changed-files-path', { required: false });
+  const labelsInput = core.getInput('labels', { required: false });
+  const journeysInput = core.getInput('journeys', { required: false });
+  const smokePathInput = core.getInput('smoke-path', { required: false });
   const rawEnv = core.getInput('env', { required: true });
 
   const customEnv = parseEnvInput(rawEnv);
   
   console.log('httpYac Action - Phase 1: Test Execution');
   await fs.mkdir(outputDir, { recursive: true });
+
+  if (!['all', 'affected', 'explicit'].includes(runMode)) {
+    throw new Error(`Invalid run-mode: ${runMode}`);
+  }
   
   // Find all journey.yaml files
   console.log('\nFinding user journeys...');
@@ -37146,13 +37706,84 @@ async function main() {
 
   if (journeys.length === 0) {
     console.log('   No user journeys found');
-    return;
   } 
   console.log(`   Found ${journeys.length} user journey(s)`);
+
+  let selection = null;
+  let journeysToRun = journeys;
+  let smokeTests = [];
+
+  if (runMode !== 'all' || manifestPath) {
+    if (!manifestPath) {
+      throw new Error(`manifest-path is required when run-mode is ${runMode}`);
+    }
+    if (runMode === 'affected' && !changedFilesPath) {
+      throw new Error('changed-files-path is required when run-mode is affected');
+    }
+
+    selection = await selectJourneys({
+      manifestPath,
+      changedFilesPath,
+      labelsInput,
+      journeysInput,
+      mode: runMode,
+      scenariosPath
+    });
+  } else {
+    selection = {
+      mode: 'all',
+      journeys: journeys.map((journey) => journey.name),
+      reasons: [{ type: 'mode', mode: 'all', selected_journeys: journeys.map((journey) => journey.name) }],
+      unmatched_files: [],
+      fallbacks: []
+    };
+  }
+
+  const selectionPath = path.join(outputDir, 'selection.json');
+  await fs.writeFile(selectionPath, JSON.stringify(selection, null, 2), 'utf8');
+  console.log(`\nSelection generated: ${selectionPath}`);
+  console.log(`   Mode: ${selection.mode}`);
+  console.log(`   Selected journeys: ${selection.journeys.join(', ') || '(none)'}`);
+
+  const selectedJourneySet = new Set(selection.journeys || []);
+  journeysToRun = journeys.filter((journey) => selectedJourneySet.has(journey.name));
+
+  if (selectedJourneySet.has('smoke')) {
+    const smokePath = smokePathInput
+      || path.resolve(scenariosPath, '..', 'smoke');
+    smokeTests = await findSmokeHttpFiles(smokePath);
+    if (smokeTests.length === 0) {
+      throw new Error(`Selected smoke journey but no .http files were found in ${smokePath}`);
+    }
+  }
+
+  const knownRunnableJourneys = new Set([
+    ...journeys.map((journey) => journey.name),
+    ...(smokeTests.length > 0 ? ['smoke'] : [])
+  ]);
+  const missingJourneys = selection.journeys.filter((journey) => !knownRunnableJourneys.has(journey));
+  if (missingJourneys.length > 0) {
+    throw new Error(`Selected journey is not runnable from scenarios-path: ${missingJourneys.join(', ')}`);
+  }
+
+  if (journeysToRun.length === 0 && smokeTests.length === 0) {
+    throw new Error('Selection produced no runnable journeys');
+  }
   
   const results = [];
+
+  for (const smokeTest of smokeTests) {
+    let caseIndex = 0;
+    for (const testCase of smokeTest.config.cases) {
+      caseIndex++;
+      const outputFileName = `smoke-${caseIndex}.json`;
+      const outputPath = path.join(outputDir, outputFileName);
+      const metadataResult = await runHttpYacTest(smokeTest.path, smokeTest.config, testCase, outputPath, customEnv, HTTPYAC_VERSION);
+      results.push(metadataResult);
+    }
+  }
   
-  for (const journey of journeys) {
+  for (const journey of journeysToRun) {
     try {
       const config = await parseJourneyYaml(journey.yamlPath);
       
@@ -37184,6 +37815,7 @@ async function main() {
   const errorCount = results.filter(isErrorResult).length;
   const metadataData = {
     timestamp: new Date().toISOString(),
+    selection,
     summary: {
       total: results.length,
       successful: results.filter(r => r.success).length,
@@ -37211,7 +37843,7 @@ async function main() {
     return;
   }
 
-  const markdown = buildMarkdownSummary(reports);
+  const markdown = buildMarkdownSummary(reports, selection);
   const summaryPath = await writeSummary(markdown, outputDir);
 
   console.log(`   Summary generated: ${summaryPath}`);

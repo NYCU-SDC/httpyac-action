@@ -3,10 +3,10 @@
 const core = require('@actions/core');
 const fs = require('fs').promises;
 const path = require('path');
-const { findJourneysYaml, parseJourneyYaml, runHttpYacTest } = require('./executor');
+const { findJourneysYaml, findSmokeHttpFiles, parseJourneyYaml, runHttpYacTest } = require('./executor');
 const { loadReports, buildMarkdownSummary, writeSummary } = require('./reporter');
 const { isTestFailed, isErrorResult } = require('./error-types');
-const { error } = require('console');
+const { selectJourneys } = require('./selector');
 
 const HTTPYAC_VERSION = '6.16.7';
 
@@ -49,12 +49,22 @@ function parseEnvInput(envInput) {
 async function main() {
   const scenariosPath = core.getInput('scenarios-path', { required: true });
   const outputDir = core.getInput('output-dir', { required: false }) || './httpyac-results';
+  const runMode = core.getInput('run-mode', { required: false }) || 'all';
+  const manifestPath = core.getInput('manifest-path', { required: false });
+  const changedFilesPath = core.getInput('changed-files-path', { required: false });
+  const labelsInput = core.getInput('labels', { required: false });
+  const journeysInput = core.getInput('journeys', { required: false });
+  const smokePathInput = core.getInput('smoke-path', { required: false });
   const rawEnv = core.getInput('env', { required: true });
 
   const customEnv = parseEnvInput(rawEnv);
   
   console.log('httpYac Action - Phase 1: Test Execution');
   await fs.mkdir(outputDir, { recursive: true });
+
+  if (!['all', 'affected', 'explicit'].includes(runMode)) {
+    throw new Error(`Invalid run-mode: ${runMode}`);
+  }
   
   // Find all journey.yaml files
   console.log('\nFinding user journeys...');
@@ -66,13 +76,84 @@ async function main() {
 
   if (journeys.length === 0) {
     console.log('   No user journeys found');
-    return;
   } 
   console.log(`   Found ${journeys.length} user journey(s)`);
+
+  let selection = null;
+  let journeysToRun = journeys;
+  let smokeTests = [];
+
+  if (runMode !== 'all' || manifestPath) {
+    if (!manifestPath) {
+      throw new Error(`manifest-path is required when run-mode is ${runMode}`);
+    }
+    if (runMode === 'affected' && !changedFilesPath) {
+      throw new Error('changed-files-path is required when run-mode is affected');
+    }
+
+    selection = await selectJourneys({
+      manifestPath,
+      changedFilesPath,
+      labelsInput,
+      journeysInput,
+      mode: runMode,
+      scenariosPath
+    });
+  } else {
+    selection = {
+      mode: 'all',
+      journeys: journeys.map((journey) => journey.name),
+      reasons: [{ type: 'mode', mode: 'all', selected_journeys: journeys.map((journey) => journey.name) }],
+      unmatched_files: [],
+      fallbacks: []
+    };
+  }
+
+  const selectionPath = path.join(outputDir, 'selection.json');
+  await fs.writeFile(selectionPath, JSON.stringify(selection, null, 2), 'utf8');
+  console.log(`\nSelection generated: ${selectionPath}`);
+  console.log(`   Mode: ${selection.mode}`);
+  console.log(`   Selected journeys: ${selection.journeys.join(', ') || '(none)'}`);
+
+  const selectedJourneySet = new Set(selection.journeys || []);
+  journeysToRun = journeys.filter((journey) => selectedJourneySet.has(journey.name));
+
+  if (selectedJourneySet.has('smoke')) {
+    const smokePath = smokePathInput
+      || path.resolve(scenariosPath, '..', 'smoke');
+    smokeTests = await findSmokeHttpFiles(smokePath);
+    if (smokeTests.length === 0) {
+      throw new Error(`Selected smoke journey but no .http files were found in ${smokePath}`);
+    }
+  }
+
+  const knownRunnableJourneys = new Set([
+    ...journeys.map((journey) => journey.name),
+    ...(smokeTests.length > 0 ? ['smoke'] : [])
+  ]);
+  const missingJourneys = selection.journeys.filter((journey) => !knownRunnableJourneys.has(journey));
+  if (missingJourneys.length > 0) {
+    throw new Error(`Selected journey is not runnable from scenarios-path: ${missingJourneys.join(', ')}`);
+  }
+
+  if (journeysToRun.length === 0 && smokeTests.length === 0) {
+    throw new Error('Selection produced no runnable journeys');
+  }
   
   const results = [];
+
+  for (const smokeTest of smokeTests) {
+    let caseIndex = 0;
+    for (const testCase of smokeTest.config.cases) {
+      caseIndex++;
+      const outputFileName = `smoke-${caseIndex}.json`;
+      const outputPath = path.join(outputDir, outputFileName);
+      const metadataResult = await runHttpYacTest(smokeTest.path, smokeTest.config, testCase, outputPath, customEnv, HTTPYAC_VERSION);
+      results.push(metadataResult);
+    }
+  }
   
-  for (const journey of journeys) {
+  for (const journey of journeysToRun) {
     try {
       const config = await parseJourneyYaml(journey.yamlPath);
       
@@ -104,6 +185,7 @@ async function main() {
   const errorCount = results.filter(isErrorResult).length;
   const metadataData = {
     timestamp: new Date().toISOString(),
+    selection,
     summary: {
       total: results.length,
       successful: results.filter(r => r.success).length,
@@ -131,7 +213,7 @@ async function main() {
     return;
   }
 
-  const markdown = buildMarkdownSummary(reports);
+  const markdown = buildMarkdownSummary(reports, selection);
   const summaryPath = await writeSummary(markdown, outputDir);
 
   console.log(`   Summary generated: ${summaryPath}`);

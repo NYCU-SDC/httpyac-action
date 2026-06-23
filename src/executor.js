@@ -85,6 +85,35 @@ async function findJourneysYaml(baseDir) {
   return [journeys, skippedJourneys];
 }
 
+async function findSmokeHttpFiles(smokeDir) {
+  const smokeTests = [];
+
+  try {
+    const entries = await fs.readdir(smokeDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.http')) {
+        smokeTests.push({
+          name: path.basename(entry.name, '.http'),
+          path: smokeDir,
+          config: {
+            name: 'Smoke',
+            description: 'Minimal smoke checks',
+            cases: [{
+              name: path.basename(entry.name, '.http'),
+              description: 'Smoke check',
+              path: entry.name
+            }]
+          }
+        });
+      }
+    }
+  } catch (err) {
+    throw new Error(`Failed to read smoke path ${smokeDir}: ${err.message}`);
+  }
+
+  return smokeTests;
+}
+
 async function parseJourneyYaml(filepath) {
   try {
     const content = await fs.readFile(filepath, 'utf8');
@@ -118,7 +147,10 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
     for (const [key, value] of Object.entries(env || {})) {
       args.push('--var', `${key}=${value}`);
     }
-    args.push('--name', testCase.test, '--json', '--output', 'exchange', '--output-failed', 'exchange');
+    if (testCase.test) {
+      args.push('--name', testCase.test);
+    }
+    args.push('--json', '--output', 'exchange', '--output-failed', 'exchange');
 
 
     const outputFd = await fs.open(absoluteOutputPath, 'w');
@@ -178,6 +210,7 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
 
 module.exports = {
   findJourneysYaml,
+  findSmokeHttpFiles,
   parseJourneyYaml,
   runHttpYacTest
 };
