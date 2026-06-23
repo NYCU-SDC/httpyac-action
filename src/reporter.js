@@ -580,6 +580,22 @@ function buildSelectionSection(selection) {
     }
   }
 
+  if (Array.isArray(selection.ignored_files) && selection.ignored_files.length > 0) {
+    lines.push('');
+    lines.push('**Ignored Files**');
+    lines.push('|Changed File|Matched Ignore Paths|');
+    lines.push('|:---|:---|');
+    for (const file of selection.ignored_files) {
+      const fileLabel = file.previousPath
+        ? `\`${file.previousPath}\` -> \`${file.path}\``
+        : `\`${file.path}\``;
+      const matchLabels = (file.matches || []).flatMap((match) => (
+        (match.matched_ignore_paths || []).map((pattern) => `\`${match.field}:${match.path}\` matched \`${pattern}\``)
+      ));
+      lines.push(`|${fileLabel}|${matchLabels.join('<br>') || '_N/A_'}|`);
+    }
+  }
+
   return lines.join('\n');
 }
 

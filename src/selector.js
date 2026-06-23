@@ -35,6 +35,43 @@ function matchesPath(filePath, pattern) {
   return globToRegex(pattern).test(filePath);
 }
 
+function getPathCandidates(file) {
+  return [
+    { field: 'path', value: file.path },
+    { field: 'previousPath', value: file.previousPath }
+  ].filter((candidate) => candidate.value);
+}
+
+function getIgnoreMatches(file, ignorePaths = []) {
+  const matches = [];
+  for (const candidate of getPathCandidates(file)) {
+    const matchedPatterns = ignorePaths.filter((pattern) => matchesPath(candidate.value, pattern));
+    if (matchedPatterns.length > 0) {
+      matches.push({
+        field: candidate.field,
+        path: candidate.value,
+        matched_ignore_paths: matchedPatterns
+      });
+    }
+  }
+  return matches;
+}
+
+function shouldIgnoreFile(file, ignorePaths = []) {
+  const candidates = getPathCandidates(file);
+  if (candidates.length === 0 || ignorePaths.length === 0) {
+    return { ignored: false, matches: [] };
+  }
+
+  const matches = getIgnoreMatches(file, ignorePaths);
+  const matchedFields = new Set(matches.map((match) => match.field));
+
+  return {
+    ignored: candidates.every((candidate) => matchedFields.has(candidate.field)),
+    matches
+  };
+}
+
 async function loadManifest(manifestPath) {
   const content = await fs.readFile(manifestPath, 'utf8');
   const manifest = yaml.parse(content);
@@ -243,6 +280,7 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
   const reasons = [];
   const unmatchedFiles = [];
   const fallbacks = [];
+  const ignoredFiles = [];
 
   const addJourneys = (journeys) => {
     for (const journey of journeys) {
@@ -280,6 +318,7 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
       journeys: unique([...selected]),
       reasons,
       unmatched_files: [],
+      ignored_files: [],
       fallbacks: []
     };
   }
@@ -314,10 +353,12 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
       journeys: unique([...selected]),
       reasons,
       unmatched_files: [],
+      ignored_files: [],
       fallbacks: []
     };
   }
 
+  const ignorePaths = Array.isArray(manifest.ignore_paths) ? manifest.ignore_paths : [];
   const threshold = Number(manifest.defaults.large_change_threshold || 0);
   if (threshold > 0 && changedFiles.length > threshold) {
     const resolved = addGroup('full', 'fallback', 'large_change');
@@ -333,16 +374,25 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
       journeys: unique([...selected]),
       reasons,
       unmatched_files: [],
+      ignored_files: [],
       fallbacks
     };
   }
 
   for (const file of changedFiles) {
+    const ignoreResult = shouldIgnoreFile(file, ignorePaths);
+    if (ignoreResult.ignored) {
+      ignoredFiles.push({
+        path: file.path,
+        previousPath: file.previousPath || '',
+        status: file.status,
+        matches: ignoreResult.matches
+      });
+      continue;
+    }
+
     const matchedRules = [];
-    const candidatePaths = [
-      { field: 'path', value: file.path },
-      { field: 'previousPath', value: file.previousPath }
-    ].filter((candidate) => candidate.value);
+    const candidatePaths = getPathCandidates(file);
 
     for (const rule of manifest.rules) {
       const matches = [];
@@ -396,6 +446,7 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
       journeys: unique([...selected]),
       reasons,
       unmatched_files: unmatchedFiles,
+      ignored_files: ignoredFiles,
       fallbacks
     };
   }
@@ -405,6 +456,7 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
     journeys: unique([...selected]),
     reasons,
     unmatched_files: unmatchedFiles,
+    ignored_files: ignoredFiles,
     fallbacks
   };
 }
@@ -435,5 +487,6 @@ module.exports = {
   loadChangedFiles,
   parseLabels,
   parseListInput,
+  shouldIgnoreFile,
   matchesPath
 };
