@@ -529,6 +529,12 @@ function buildSelectionSection(selection) {
   lines.push('');
   lines.push(`- Mode: \`${selection.mode}\``);
   lines.push(`- Selected journeys: ${(selection.journeys || []).map((journey) => `\`${journey}\``).join(', ') || '_None_'}`);
+  if (Array.isArray(selection.cases) && selection.cases.length > 0) {
+    lines.push(`- Selected cases: ${selection.cases.length}`);
+  }
+  if (Array.isArray(selection.all_cases_journeys) && selection.all_cases_journeys.length > 0) {
+    lines.push(`- Full journey cases: ${selection.all_cases_journeys.map((journey) => `\`${journey}\``).join(', ')}`);
+  }
 
   if (Array.isArray(selection.fallbacks) && selection.fallbacks.length > 0) {
     lines.push('');
@@ -544,13 +550,13 @@ function buildSelectionSection(selection) {
     }
   }
 
-  const changedFileReasons = (selection.reasons || []).filter((reason) => reason.type === 'changed_file');
-  if (changedFileReasons.length > 0) {
+  const changedFileDomainReasons = (selection.reasons || []).filter((reason) => reason.type === 'changed_file_domain');
+  if (changedFileDomainReasons.length > 0) {
     lines.push('');
-    lines.push('**Matched Rules**');
-    lines.push('|Changed File|Rule|Matched Paths|Selected Journeys|');
+    lines.push('**Matched Domains**');
+    lines.push('|Changed File|Domain|Matched Paths|Risk|');
     lines.push('|:---|:---|:---|:---|');
-    for (const reason of changedFileReasons) {
+    for (const reason of changedFileDomainReasons) {
       const fileLabel = reason.previous_file
         ? `\`${reason.previous_file}\` -> \`${reason.file}\``
         : `\`${reason.file}\``;
@@ -558,8 +564,23 @@ function buildSelectionSection(selection) {
         ? reason.matched_file_paths.map((match) => `\`${match.field}:${match.path}\` matched \`${match.pattern}\``)
         : (reason.matched_paths || []).map((item) => `\`${item}\``);
       lines.push(
-        `|${fileLabel}|\`${reason.matched_rule}\`|${matchedPathLabels.join('<br>')}|${(reason.selected_journeys || []).map((item) => `\`${item}\``).join('<br>')}|`
+        `|${fileLabel}|\`${reason.matched_domain}\`|${matchedPathLabels.join('<br>')}|${reason.risk ? `\`${reason.risk}\`` : ''}|`
       );
+    }
+  }
+
+  const domainSelectionReasons = (selection.reasons || []).filter((reason) => reason.type === 'domain_selection');
+  if (domainSelectionReasons.length > 0) {
+    lines.push('');
+    lines.push('**Selected Domain Cases**');
+    lines.push('|Domain|Changed Files|Selected Cases|');
+    lines.push('|:---|:---|:---|');
+    for (const reason of domainSelectionReasons) {
+      const files = (reason.files || []).map((file) => `\`${file}\``).join('<br>');
+      const cases = (reason.selected_cases || []).map((testCase) => {
+        return `\`${testCase.journey}\` / ${testCase.name || testCase.test || testCase.path}`;
+      }).join('<br>');
+      lines.push(`|\`${reason.domain}\`|${files}|${cases || '_None_'}|`);
     }
   }
 
@@ -568,7 +589,20 @@ function buildSelectionSection(selection) {
     lines.push('');
     lines.push('**Matched Labels**');
     for (const reason of labelReasons) {
-      lines.push(`- \`${reason.label}\` selected ${(reason.selected_journeys || []).map((journey) => `\`${journey}\``).join(', ')}`);
+      const selectedParts = [];
+      if (reason.mode) {
+        selectedParts.push(`mode \`${reason.mode}\``);
+      }
+      if (Array.isArray(reason.selected_domains) && reason.selected_domains.length > 0) {
+        selectedParts.push(`domains ${reason.selected_domains.map((domain) => `\`${domain}\``).join(', ')}`);
+      }
+      if (Array.isArray(reason.selected_journeys) && reason.selected_journeys.length > 0) {
+        selectedParts.push(`journeys ${reason.selected_journeys.map((journey) => `\`${journey}\``).join(', ')}`);
+      }
+      if (Array.isArray(reason.selected_cases) && reason.selected_cases.length > 0) {
+        selectedParts.push(`${reason.selected_cases.length} cases`);
+      }
+      lines.push(`- \`${reason.label}\` selected ${selectedParts.join('; ') || '_None_'}`);
     }
   }
 

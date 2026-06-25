@@ -116,6 +116,19 @@ async function main() {
   console.log(`   Selected journeys: ${selection.journeys.join(', ') || '(none)'}`);
 
   const selectedJourneySet = new Set(selection.journeys || []);
+  const allCasesJourneySet = new Set(selection.all_cases_journeys || []);
+  const selectedCasesByJourney = new Map();
+  for (const selectedCase of selection.cases || []) {
+    if (!selectedCase || !selectedCase.journey) {
+      continue;
+    }
+    if (!selectedCasesByJourney.has(selectedCase.journey)) {
+      selectedCasesByJourney.set(selectedCase.journey, new Set());
+    }
+    selectedCasesByJourney
+      .get(selectedCase.journey)
+      .add(`${selectedCase.path || ''}\u0000${selectedCase.test || ''}\u0000${selectedCase.name || ''}`);
+  }
   journeysToRun = journeys.filter((journey) => selectedJourneySet.has(journey.name));
 
   if (selectedJourneySet.has('smoke')) {
@@ -156,9 +169,20 @@ async function main() {
   for (const journey of journeysToRun) {
     try {
       const config = await parseJourneyYaml(journey.yamlPath);
+      const selectedCaseKeys = selectedCasesByJourney.get(journey.name);
+      const casesToRun = allCasesJourneySet.has(journey.name) || !selectedCaseKeys
+        ? config.cases
+        : config.cases.filter((testCase) => {
+            return selectedCaseKeys.has(`${testCase.path || ''}\u0000${testCase.test || ''}\u0000${testCase.name || ''}`);
+          });
+
+      if (casesToRun.length === 0) {
+        console.log(`\nSkipping journey '${journey.name}' because no selected cases are runnable`);
+        continue;
+      }
       
       let caseIndex = 0;
-      for (const testCase of config.cases) {
+      for (const testCase of casesToRun) {
         caseIndex++;
         
         const outputFileName = `${journey.name}-${caseIndex}.json`;

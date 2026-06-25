@@ -158,29 +158,6 @@ function parseListInput(value, fieldName) {
     .filter(Boolean);
 }
 
-function resolveEntry(manifest, entry, context) {
-  const selected = [];
-  const selectedGroups = [];
-
-  if (Array.isArray(entry.journeys)) {
-    selected.push(...entry.journeys);
-  }
-
-  if (entry.group) {
-    const group = manifest.journey_groups && manifest.journey_groups[entry.group];
-    if (!group) {
-      throw new Error(`${context} references unknown journey group: ${entry.group}`);
-    }
-    selectedGroups.push(entry.group);
-    selected.push(...(group.journeys || []));
-  }
-
-  return {
-    journeys: selected,
-    groups: selectedGroups
-  };
-}
-
 async function getKnownJourneys(scenariosPath) {
   const knownJourneys = new Set(['smoke']);
 
@@ -199,6 +176,38 @@ async function getKnownJourneys(scenariosPath) {
   return knownJourneys;
 }
 
+async function loadJourneyCases(scenariosPath) {
+  const journeys = new Map();
+  const entries = await fs.readdir(scenariosPath, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const journeyYamlPath = path.join(scenariosPath, entry.name, 'journey.yaml');
+    try {
+      const content = await fs.readFile(journeyYamlPath, 'utf8');
+      const config = yaml.parse(content);
+      const cases = Array.isArray(config && config.cases) ? config.cases : [];
+      journeys.set(entry.name, {
+        name: entry.name,
+        title: config && config.name ? config.name : entry.name,
+        cases: cases.map((testCase, index) => ({
+          name: testCase.name || `Case ${index + 1}`,
+          path: testCase.path || '',
+          test: testCase.test || '',
+          domains: Array.isArray(testCase.domains) ? testCase.domains.map(String) : []
+        }))
+      });
+    } catch (_err) {
+      // Directory without journey.yaml is not a selectable user journey.
+    }
+  }
+
+  return journeys;
+}
+
 async function validateManifest(manifest, scenariosPath) {
   if (!manifest.defaults || typeof manifest.defaults !== 'object') {
     throw new Error('Manifest must define defaults');
@@ -208,18 +217,6 @@ async function validateManifest(manifest, scenariosPath) {
     throw new Error('Manifest defaults.always_run must be an array');
   }
 
-  if (!manifest.journey_groups || typeof manifest.journey_groups !== 'object') {
-    throw new Error('Manifest must define journey_groups');
-  }
-
-  if (!manifest.journey_groups.full || !Array.isArray(manifest.journey_groups.full.journeys)) {
-    throw new Error('Manifest must define journey_groups.full.journeys');
-  }
-
-  if (!Array.isArray(manifest.rules)) {
-    throw new Error('Manifest rules must be an array');
-  }
-
   let knownJourneys;
   try {
     knownJourneys = await getKnownJourneys(scenariosPath);
@@ -227,20 +224,26 @@ async function validateManifest(manifest, scenariosPath) {
     throw new Error(`Failed to read scenarios path for manifest validation: ${err.message}`);
   }
 
-  const validateEntry = (entry, context) => {
-    const hasJourneys = Array.isArray(entry.journeys);
-    const hasGroup = Boolean(entry.group);
-    if (!hasJourneys && !hasGroup) {
-      throw new Error(`${context} must define journeys or group`);
+  const domainNames = new Set(Object.keys(manifest.domains || {}));
+
+  const validateJourneys = (journeys, context) => {
+    if (!Array.isArray(journeys)) {
+      return;
     }
-    if (hasGroup && !manifest.journey_groups[entry.group]) {
-      throw new Error(`${context} references unknown journey group: ${entry.group}`);
+    for (const journey of journeys) {
+      if (!knownJourneys.has(journey)) {
+        throw new Error(`${context} references unknown journey: ${journey}`);
+      }
     }
-    if (hasJourneys) {
-      for (const journey of entry.journeys) {
-        if (!knownJourneys.has(journey)) {
-          throw new Error(`${context} references unknown journey: ${journey}`);
-        }
+  };
+
+  const validateDomains = (domains, context) => {
+    if (!Array.isArray(domains)) {
+      return;
+    }
+    for (const domain of domains) {
+      if (!domainNames.has(domain)) {
+        throw new Error(`${context} references unknown domain: ${domain}`);
       }
     }
   };
@@ -251,49 +254,98 @@ async function validateManifest(manifest, scenariosPath) {
     }
   }
 
-  for (const [groupName, group] of Object.entries(manifest.journey_groups)) {
-    if (!Array.isArray(group.journeys)) {
-      throw new Error(`journey_groups.${groupName}.journeys must be an array`);
+  for (const [domainName, domain] of Object.entries(manifest.domains || {})) {
+    if (!domain || typeof domain !== 'object') {
+      throw new Error(`domains.${domainName} must be an object`);
     }
-    validateEntry(group, `journey_groups.${groupName}`);
+    if (!Array.isArray(domain.paths) || domain.paths.length === 0) {
+      throw new Error(`domains.${domainName}.paths must define at least one path`);
+    }
+    if (domain.risk && domain.risk !== 'full') {
+      throw new Error(`domains.${domainName}.risk must be full when defined`);
+    }
   }
 
   for (const [label, entry] of Object.entries(manifest.labels || {})) {
-    validateEntry(entry, `labels.${label}`);
-  }
-
-  for (const rule of manifest.rules) {
-    if (!rule || typeof rule.name !== 'string' || !rule.name.trim()) {
-      throw new Error('Each rule must define a non-empty name');
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`labels.${label} must be an object`);
     }
-    if (!Array.isArray(rule.paths) || rule.paths.length === 0) {
-      throw new Error(`Rule ${rule.name} must define at least one path`);
+    if (entry.mode && entry.mode !== 'full') {
+      throw new Error(`labels.${label}.mode must be full when defined`);
     }
-    validateEntry(rule, `rules.${rule.name}`);
+    validateJourneys(entry.journeys, `labels.${label}`);
+    validateDomains(entry.domains, `labels.${label}`);
   }
 
   return knownJourneys;
 }
 
-function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys }) {
+function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys, journeyCases }) {
   const selected = new Set();
+  const allCasesJourneys = new Set();
+  const selectedCases = new Map();
   const reasons = [];
   const unmatchedFiles = [];
   const fallbacks = [];
   const ignoredFiles = [];
 
-  const addJourneys = (journeys) => {
+  const addJourneys = (journeys, allCases = false) => {
     for (const journey of journeys) {
       selected.add(journey);
+      if (allCases && journey !== 'smoke') {
+        allCasesJourneys.add(journey);
+      }
     }
   };
 
-  const addGroup = (groupName, reasonType, source) => {
-    const entry = { group: groupName };
-    const resolved = resolveEntry(manifest, entry, `${reasonType}.${source}`);
-    addJourneys(resolved.journeys);
-    return resolved;
+  const addCase = (journeyName, testCase) => {
+    selected.add(journeyName);
+    const key = `${journeyName}\u0000${testCase.path}\u0000${testCase.test || ''}\u0000${testCase.name || ''}`;
+    if (!selectedCases.has(key)) {
+      selectedCases.set(key, {
+        journey: journeyName,
+        name: testCase.name,
+        path: testCase.path,
+        test: testCase.test || '',
+        domains: testCase.domains || []
+      });
+    }
   };
+
+  const addAllJourneys = () => {
+    const journeys = [...journeyCases.keys()];
+    addJourneys(journeys, true);
+    return journeys;
+  };
+
+  const addCasesForDomain = (domainName) => {
+    const domainSelectedCases = [];
+    for (const [journeyName, journey] of journeyCases.entries()) {
+      for (const testCase of journey.cases) {
+        if ((testCase.domains || []).includes(domainName)) {
+          addCase(journeyName, testCase);
+          domainSelectedCases.push({
+            journey: journeyName,
+            name: testCase.name,
+            path: testCase.path,
+            test: testCase.test || ''
+          });
+        }
+      }
+    }
+    return domainSelectedCases;
+  };
+
+  const selectedPayload = (selectionMode) => ({
+    mode: selectionMode,
+    journeys: unique([...selected]),
+    cases: [...selectedCases.values()],
+    all_cases_journeys: unique([...allCasesJourneys]),
+    reasons,
+    unmatched_files: unmatchedFiles,
+    ignored_files: ignoredFiles,
+    fallbacks
+  });
 
   const alwaysRun = manifest.defaults.always_run || [];
   addJourneys(alwaysRun);
@@ -306,41 +358,60 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
   }
 
   if (mode === 'all') {
-    const resolved = addGroup('full', 'mode', 'all');
+    const allJourneys = addAllJourneys();
     reasons.push({
       type: 'mode',
       mode,
-      selected_groups: resolved.groups,
-      selected_journeys: resolved.journeys
+      selected_journeys: allJourneys
     });
-    return {
-      mode: 'all',
-      journeys: unique([...selected]),
-      reasons,
-      unmatched_files: [],
-      ignored_files: [],
-      fallbacks: []
-    };
+    return selectedPayload('all');
   }
 
+  let labelRequestedFull = false;
   for (const label of labels) {
     const entry = manifest.labels && manifest.labels[label];
     if (!entry) {
       continue;
     }
-    const resolved = resolveEntry(manifest, entry, `labels.${label}`);
-    addJourneys(resolved.journeys);
+
+    let selectedJourneys = [];
+    let selectedDomains = [];
+    let selectedLabelCases = [];
+
+    if (entry.mode === 'full') {
+      labelRequestedFull = true;
+      selectedJourneys = addAllJourneys();
+    }
+
+    if (Array.isArray(entry.journeys)) {
+      selectedJourneys.push(...entry.journeys);
+      addJourneys(entry.journeys, true);
+    }
+
+    if (Array.isArray(entry.domains)) {
+      selectedDomains = entry.domains;
+      for (const domainName of entry.domains) {
+        selectedLabelCases.push(...addCasesForDomain(domainName));
+      }
+    }
+
     reasons.push({
       type: 'label',
       label,
-      selected_groups: resolved.groups,
-      selected_journeys: resolved.journeys
+      mode: entry.mode || '',
+      selected_domains: selectedDomains,
+      selected_journeys: unique(selectedJourneys),
+      selected_cases: selectedLabelCases
     });
+  }
+
+  if (labelRequestedFull) {
+    return selectedPayload('full');
   }
 
   if (mode === 'explicit') {
     if (explicitJourneys.length > 0) {
-      addJourneys(explicitJourneys);
+      addJourneys(explicitJourneys, true);
       reasons.push({
         type: 'explicit',
         source: 'journeys',
@@ -348,36 +419,25 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
       });
     }
 
-    return {
-      mode: 'explicit',
-      journeys: unique([...selected]),
-      reasons,
-      unmatched_files: [],
-      ignored_files: [],
-      fallbacks: []
-    };
+    return selectedPayload('explicit');
   }
 
-  const ignorePaths = Array.isArray(manifest.ignore_paths) ? manifest.ignore_paths : [];
+  const ignorePaths = Array.isArray(manifest.defaults.ignore_paths) ? manifest.defaults.ignore_paths : [];
   const threshold = Number(manifest.defaults.large_change_threshold || 0);
   if (threshold > 0 && changedFiles.length > threshold) {
-    const resolved = addGroup('full', 'fallback', 'large_change');
+    const allJourneys = addAllJourneys();
     fallbacks.push({
       type: 'large_change',
       changed_file_count: changedFiles.length,
       threshold,
-      selected_groups: resolved.groups,
-      selected_journeys: resolved.journeys
+      selected_journeys: allJourneys
     });
-    return {
-      mode: 'full',
-      journeys: unique([...selected]),
-      reasons,
-      unmatched_files: [],
-      ignored_files: [],
-      fallbacks
-    };
+    return selectedPayload('full');
   }
+
+  const domainEntries = Object.entries(manifest.domains || {});
+  const impactedDomains = new Map();
+  const fullRiskDomainMatches = [];
 
   for (const file of changedFiles) {
     const ignoreResult = shouldIgnoreFile(file, ignorePaths);
@@ -391,13 +451,13 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
       continue;
     }
 
-    const matchedRules = [];
+    const matchedDomains = [];
     const candidatePaths = getPathCandidates(file);
 
-    for (const rule of manifest.rules) {
+    for (const [domainName, domain] of domainEntries) {
       const matches = [];
       for (const candidate of candidatePaths) {
-        for (const pattern of rule.paths) {
+        for (const pattern of domain.paths) {
           if (matchesPath(candidate.value, pattern)) {
             matches.push({
               field: candidate.field,
@@ -412,53 +472,81 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
         continue;
       }
 
-      const resolved = resolveEntry(manifest, rule, `rules.${rule.name}`);
-      addJourneys(resolved.journeys);
-      matchedRules.push(rule.name);
+      if (!impactedDomains.has(domainName)) {
+        impactedDomains.set(domainName, []);
+      }
+      impactedDomains.get(domainName).push(file.path);
+      matchedDomains.push(domainName);
       reasons.push({
-        type: 'changed_file',
+        type: 'changed_file_domain',
         file: file.path,
         previous_file: file.previousPath || '',
         status: file.status,
-        matched_rule: rule.name,
+        matched_domain: domainName,
         matched_paths: unique(matches.map((match) => match.pattern)),
         matched_file_paths: matches,
-        selected_groups: resolved.groups,
-        selected_journeys: resolved.journeys
+        risk: domain.risk || ''
       });
+
+      if (domain.risk === 'full') {
+        fullRiskDomainMatches.push({
+          domain: domainName,
+          file: file.path
+        });
+      }
     }
 
-    if (matchedRules.length === 0) {
+    if (matchedDomains.length === 0) {
       unmatchedFiles.push(file.path);
     }
   }
 
+  if (fullRiskDomainMatches.length > 0) {
+    const allJourneys = addAllJourneys();
+    fallbacks.push({
+      type: 'domain_risk',
+      matches: fullRiskDomainMatches,
+      selected_journeys: allJourneys
+    });
+    return selectedPayload('full');
+  }
+
   if (unmatchedFiles.length > 0 && manifest.defaults.unknown_change_policy === 'full') {
-    const resolved = addGroup('full', 'fallback', 'unknown_change');
+    const allJourneys = addAllJourneys();
     fallbacks.push({
       type: 'unknown_change',
       files: unmatchedFiles,
-      selected_groups: resolved.groups,
-      selected_journeys: resolved.journeys
+      selected_journeys: allJourneys
     });
-    return {
-      mode: 'full',
-      journeys: unique([...selected]),
-      reasons,
-      unmatched_files: unmatchedFiles,
-      ignored_files: ignoredFiles,
-      fallbacks
-    };
+    return selectedPayload('full');
   }
 
-  return {
-    mode: 'affected',
-    journeys: unique([...selected]),
-    reasons,
-    unmatched_files: unmatchedFiles,
-    ignored_files: ignoredFiles,
-    fallbacks
-  };
+  for (const [domainName] of impactedDomains) {
+    const domainSelectedCases = addCasesForDomain(domainName);
+
+    reasons.push({
+      type: 'domain_selection',
+      domain: domainName,
+      files: unique(impactedDomains.get(domainName)),
+      selected_cases: domainSelectedCases
+    });
+  }
+
+  const uncoveredDomains = [...impactedDomains.keys()].filter((domainName) => {
+    return ![...selectedCases.values()].some((testCase) => (testCase.domains || []).includes(domainName));
+  });
+
+  if (uncoveredDomains.length > 0 && manifest.defaults.unknown_change_policy === 'full') {
+    const allJourneys = addAllJourneys();
+    fallbacks.push({
+      type: 'uncovered_domain',
+      domains: uncoveredDomains,
+      selected_journeys: allJourneys
+    });
+    return selectedPayload('full');
+  }
+
+  return selectedPayload('affected');
 }
 
 async function selectJourneys(options) {
@@ -473,13 +561,14 @@ async function selectJourneys(options) {
   }
 
   const knownJourneys = await validateManifest(manifest, options.scenariosPath);
+  const journeyCases = await loadJourneyCases(options.scenariosPath);
   for (const journey of explicitJourneys) {
     if (!knownJourneys.has(journey)) {
       throw new Error(`Explicit journey does not exist: ${journey}`);
     }
   }
 
-  return buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys });
+  return buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys, journeyCases });
 }
 
 module.exports = {
