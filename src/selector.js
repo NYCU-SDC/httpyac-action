@@ -340,6 +340,16 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
     mode: selectionMode,
     journeys: unique([...selected]),
     cases: [...selectedCases.values()],
+    available_cases: [...journeyCases.entries()].flatMap(([journeyName, journey]) => (
+      journey.cases.map((testCase) => ({
+        journey: journeyName,
+        journey_title: journey.title,
+        name: testCase.name,
+        path: testCase.path,
+        test: testCase.test || '',
+        domains: testCase.domains || []
+      }))
+    )),
     all_cases_journeys: unique([...allCasesJourneys]),
     reasons,
     unmatched_files: unmatchedFiles,

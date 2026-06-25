@@ -71,12 +71,19 @@ function formatDurationMs(value) {
 }
 
 function getTotalDuration(requests = []) {
-  const total = requests.reduce((sum, request) => {
-    const duration = Number(request.duration);
-    return Number.isFinite(duration) ? sum + duration : sum;
-  }, 0);
+  const durations = requests
+    .map((request) => Number(request.duration))
+    .filter((duration) => Number.isFinite(duration));
 
-  return formatDurationMs(total);
+  if (durations.length === 0) {
+    return 'N/A';
+  }
+
+  if (durations.length === 1) {
+    return formatDurationMs(durations[0]);
+  }
+
+  return formatDurationMs(Math.max(...durations) - Math.min(...durations));
 }
 
 function getPassPercentage(passed, failed, errored) {
@@ -425,7 +432,7 @@ function buildRequestTableRows(report, reportIndex) {
 
     return {
       requestName: displayName,
-      row: `|${requestNameCell}|${passedCell}|${failedCell}|${erroredCell}|${skippedCell}|${formatDurationMs(request.duration)}|`
+      row: `|${requestNameCell}|${passedCell}|${failedCell}|${erroredCell}|${skippedCell}|`
     };
   });
 }
@@ -461,8 +468,8 @@ function buildReportSection(report, reportIndex) {
     sectionLines.push('');
   }
 
-  sectionLines.push('|Test Name|Passed|Failed|Errored|Skipped|Time|');
-  sectionLines.push('|:---|---:|---:|---:|---:|---:|');
+  sectionLines.push('|Test Name|Passed|Failed|Errored|Skipped|');
+  sectionLines.push('|:---|---:|---:|---:|---:|');
   requestRows.slice().reverse().forEach((row) => sectionLines.push(row.row));
 
   const failedRequests = report.requests
@@ -519,10 +526,262 @@ function buildOverviewSection(reports, globalTotals) {
   return lines.join('\n');
 }
 
+function escapeTableCell(value) {
+  return String(value ?? '')
+    .replace(/\|/g, '\\|')
+    .replace(/\r?\n/g, ' ');
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatTriggerList(values = [], maxItems = 3) {
+  const uniqueValues = [...new Set(values.filter(Boolean))];
+  if (uniqueValues.length === 0) {
+    return '_None_';
+  }
+
+  const visibleValues = uniqueValues.slice(0, maxItems).map((value) => `\`${escapeTableCell(value)}\``);
+  const remaining = uniqueValues.length - visibleValues.length;
+  if (remaining > 0) {
+    visibleValues.push(`+${remaining} more`);
+  }
+
+  return visibleValues.join(', ');
+}
+
+function getFallbackTriggerRows(fallback) {
+  if (fallback.type === 'domain_risk' && Array.isArray(fallback.matches)) {
+    return fallback.matches.map((match) => ({
+      type: fallback.type,
+      domain: match.domain || '',
+      files: [match.file].filter(Boolean)
+    }));
+  }
+
+  if (fallback.type === 'unknown_change' && Array.isArray(fallback.files)) {
+    return fallback.files.map((file) => ({
+      type: fallback.type,
+      domain: '_unmatched_',
+      files: [file].filter(Boolean)
+    }));
+  }
+
+  if (fallback.type === 'uncovered_domain' && Array.isArray(fallback.domains)) {
+    return fallback.domains.map((domain) => ({
+      type: fallback.type,
+      domain,
+      files: []
+    }));
+  }
+
+  if (fallback.type === 'large_change') {
+    return [{
+      type: fallback.type,
+      domain: '_all_',
+      files: [],
+      note: `${fallback.changed_file_count || 0} files > ${fallback.threshold || 0}`
+    }];
+  }
+
+  return [];
+}
+
+function buildFallbackTriggerTable(fallbacks = []) {
+  const rows = fallbacks.flatMap(getFallbackTriggerRows);
+  if (rows.length === 0) {
+    return '';
+  }
+
+  const groupedRows = [...rows.reduce((groups, row) => {
+    const key = `${row.type || 'unknown'}\u0000${row.domain || '_unknown_'}\u0000${row.note || ''}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        type: row.type || 'unknown',
+        domain: row.domain || '_unknown_',
+        files: [],
+        note: row.note || ''
+      });
+    }
+
+    groups.get(key).files.push(...(row.files || []));
+    return groups;
+  }, new Map()).values()];
+
+  const maxRows = 8;
+  const visibleRows = groupedRows.slice(0, maxRows);
+  const lines = [];
+  lines.push('**Fallback Triggers**');
+  lines.push('|Type|Domain|Files|Count|');
+  lines.push('|:---|:---|:---|---:|');
+
+  for (const row of visibleRows) {
+    const fileLabel = row.note || formatTriggerList(row.files, 2);
+    const count = row.note ? '' : new Set(row.files || []).size;
+    lines.push(`|\`${escapeTableCell(row.type)}\`|\`${escapeTableCell(row.domain)}\`|${fileLabel}|${count}|`);
+  }
+
+  if (groupedRows.length > visibleRows.length) {
+    lines.push(`|_more_|_|+${groupedRows.length - visibleRows.length} more groups in \`selection.json\`||`);
+  }
+
+  return lines.join('\n');
+}
+
+function buildSelectedDomainTable(selection, availableCases = []) {
+  const domainMap = new Map();
+
+  const ensureDomain = (domainName) => {
+    const key = domainName || '_unknown_';
+    if (!domainMap.has(key)) {
+      domainMap.set(key, {
+        domain: key,
+        files: [],
+        effects: new Set(),
+        labels: []
+      });
+    }
+    return domainMap.get(key);
+  };
+
+  for (const reason of selection.reasons || []) {
+    if (reason.type === 'changed_file_domain' && reason.matched_domain) {
+      const domain = ensureDomain(reason.matched_domain);
+      if (reason.file) {
+        domain.files.push(reason.file);
+      }
+      if (reason.risk === 'full') {
+        domain.effects.add('full fallback');
+      }
+    }
+
+    if (reason.type === 'domain_selection' && reason.domain) {
+      const domain = ensureDomain(reason.domain);
+      domain.files.push(...(reason.files || []));
+      domain.effects.add('selected cases');
+    }
+
+    if (reason.type === 'label') {
+      for (const domainName of reason.selected_domains || []) {
+        const domain = ensureDomain(domainName);
+        domain.labels.push(reason.label);
+        domain.effects.add('label');
+      }
+    }
+  }
+
+  for (const fallback of selection.fallbacks || []) {
+    for (const row of getFallbackTriggerRows(fallback)) {
+      const domain = ensureDomain(row.domain);
+      domain.files.push(...(row.files || []));
+      domain.effects.add(fallback.type === 'domain_risk' ? 'full fallback' : fallback.type);
+    }
+  }
+
+  const domains = [...domainMap.values()]
+    .filter((domain) => domain.domain && domain.domain !== '_all_' && domain.domain !== '_unmatched_')
+    .sort((a, b) => a.domain.localeCompare(b.domain));
+
+  if (domains.length === 0) {
+    return '';
+  }
+
+  const maxRows = 10;
+  const visibleDomains = domains.slice(0, maxRows);
+  const lines = [];
+  lines.push('**Selected Domains**');
+  lines.push('|Domain|Why selected|');
+  lines.push('|:---|:---|');
+
+  for (const domain of visibleDomains) {
+    const reasons = [];
+    const fileCount = new Set(domain.files).size;
+    if (fileCount > 0) {
+      reasons.push(`${formatTriggerList(domain.files, 2)} (${fileCount})`);
+    }
+    if (domain.labels.length > 0) {
+      reasons.push(`labels ${formatTriggerList(domain.labels, 2)}`);
+    }
+    if (domain.effects.size > 0) {
+      reasons.push([...domain.effects].map((effect) => `\`${escapeTableCell(effect)}\``).join(', '));
+    }
+
+    lines.push(`|\`${escapeTableCell(domain.domain)}\`|${reasons.join('<br>') || '_selection rule_'}|`);
+  }
+
+  if (domains.length > visibleDomains.length) {
+    lines.push(`|_more_|+${domains.length - visibleDomains.length} more domains in \`selection.json\`|`);
+  }
+
+  return lines.join('\n');
+}
+
+function buildJourneyCasesTable(availableCases, isCaseSelected) {
+  if (availableCases.length === 0) {
+    return '';
+  }
+
+  const groups = [];
+  const groupByJourney = new Map();
+
+  for (const testCase of availableCases) {
+    const journeyLabel = testCase.journey_title || testCase.journey || '_Unnamed journey_';
+    if (!groupByJourney.has(journeyLabel)) {
+      const group = { journeyLabel, cases: [] };
+      groupByJourney.set(journeyLabel, group);
+      groups.push(group);
+    }
+    groupByJourney.get(journeyLabel).cases.push(testCase);
+  }
+
+  const lines = [];
+  lines.push('**Journey Cases**');
+  lines.push('<table>');
+  lines.push('<thead>');
+  lines.push('<tr><th>Journey</th><th>Case</th><th>Selected</th><th>Domains</th></tr>');
+  lines.push('</thead>');
+  lines.push('<tbody>');
+
+  for (const group of groups) {
+    group.cases.forEach((testCase, index) => {
+      const caseLabel = testCase.name || testCase.test || testCase.path || '_Unnamed case_';
+      const domains = (testCase.domains || [])
+        .map((domain) => `<code>${escapeHtml(domain)}</code>`)
+        .join(', ') || '_None_';
+
+      lines.push('<tr>');
+      if (index === 0) {
+        lines.push(`<td rowspan="${group.cases.length}">${escapeHtml(group.journeyLabel)}</td>`);
+      }
+      lines.push(`<td>${escapeHtml(caseLabel)}</td>`);
+      lines.push(`<td align="center">${isCaseSelected(testCase) ? '✓' : ''}</td>`);
+      lines.push(`<td>${domains}</td>`);
+      lines.push('</tr>');
+    });
+  }
+
+  lines.push('</tbody>');
+  lines.push('</table>');
+
+  return lines.join('\n');
+}
+
 function buildSelectionSection(selection) {
   if (!selection) {
     return '';
   }
+
+  const selectedCaseKeys = new Set((selection.cases || []).map((testCase) => (
+    `${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}\u0000${testCase.name || ''}`
+  )));
+  const allCasesJourneySet = new Set(selection.all_cases_journeys || []);
+  const availableCases = Array.isArray(selection.available_cases) ? selection.available_cases : [];
 
   const lines = [];
   lines.push('## QA Selection');
@@ -548,40 +807,26 @@ function buildSelectionSection(selection) {
         lines.push(`- \`${fallback.type || 'unknown'}\``);
       }
     }
-  }
 
-  const changedFileDomainReasons = (selection.reasons || []).filter((reason) => reason.type === 'changed_file_domain');
-  if (changedFileDomainReasons.length > 0) {
-    lines.push('');
-    lines.push('**Matched Domains**');
-    lines.push('|Changed File|Domain|Matched Paths|Risk|');
-    lines.push('|:---|:---|:---|:---|');
-    for (const reason of changedFileDomainReasons) {
-      const fileLabel = reason.previous_file
-        ? `\`${reason.previous_file}\` -> \`${reason.file}\``
-        : `\`${reason.file}\``;
-      const matchedPathLabels = Array.isArray(reason.matched_file_paths) && reason.matched_file_paths.length > 0
-        ? reason.matched_file_paths.map((match) => `\`${match.field}:${match.path}\` matched \`${match.pattern}\``)
-        : (reason.matched_paths || []).map((item) => `\`${item}\``);
-      lines.push(
-        `|${fileLabel}|\`${reason.matched_domain}\`|${matchedPathLabels.join('<br>')}|${reason.risk ? `\`${reason.risk}\`` : ''}|`
-      );
+    const fallbackTriggerTable = buildFallbackTriggerTable(selection.fallbacks);
+    if (fallbackTriggerTable) {
+      lines.push('');
+      lines.push(fallbackTriggerTable);
     }
   }
 
-  const domainSelectionReasons = (selection.reasons || []).filter((reason) => reason.type === 'domain_selection');
-  if (domainSelectionReasons.length > 0) {
+  const selectedDomainTable = buildSelectedDomainTable(selection, availableCases);
+  if (selectedDomainTable) {
     lines.push('');
-    lines.push('**Selected Domain Cases**');
-    lines.push('|Domain|Changed Files|Selected Cases|');
-    lines.push('|:---|:---|:---|');
-    for (const reason of domainSelectionReasons) {
-      const files = (reason.files || []).map((file) => `\`${file}\``).join('<br>');
-      const cases = (reason.selected_cases || []).map((testCase) => {
-        return `\`${testCase.journey}\` / ${testCase.name || testCase.test || testCase.path}`;
-      }).join('<br>');
-      lines.push(`|\`${reason.domain}\`|${files}|${cases || '_None_'}|`);
-    }
+    lines.push(selectedDomainTable);
+  }
+
+  if (availableCases.length > 0) {
+    lines.push('');
+    lines.push(buildJourneyCasesTable(availableCases, (testCase) => {
+      return allCasesJourneySet.has(testCase.journey)
+        || selectedCaseKeys.has(`${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}\u0000${testCase.name || ''}`);
+    }));
   }
 
   const labelReasons = (selection.reasons || []).filter((reason) => reason.type === 'label');
@@ -603,30 +848,6 @@ function buildSelectionSection(selection) {
         selectedParts.push(`${reason.selected_cases.length} cases`);
       }
       lines.push(`- \`${reason.label}\` selected ${selectedParts.join('; ') || '_None_'}`);
-    }
-  }
-
-  if (Array.isArray(selection.unmatched_files) && selection.unmatched_files.length > 0) {
-    lines.push('');
-    lines.push('**Unmatched Files**');
-    for (const file of selection.unmatched_files) {
-      lines.push(`- \`${file}\``);
-    }
-  }
-
-  if (Array.isArray(selection.ignored_files) && selection.ignored_files.length > 0) {
-    lines.push('');
-    lines.push('**Ignored Files**');
-    lines.push('|Changed File|Matched Ignore Paths|');
-    lines.push('|:---|:---|');
-    for (const file of selection.ignored_files) {
-      const fileLabel = file.previousPath
-        ? `\`${file.previousPath}\` -> \`${file.path}\``
-        : `\`${file.path}\``;
-      const matchLabels = (file.matches || []).flatMap((match) => (
-        (match.matched_ignore_paths || []).map((pattern) => `\`${match.field}:${match.path}\` matched \`${pattern}\``)
-      ));
-      lines.push(`|${fileLabel}|${matchLabels.join('<br>') || '_N/A_'}|`);
     }
   }
 
