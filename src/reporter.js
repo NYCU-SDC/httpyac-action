@@ -502,26 +502,43 @@ function buildOverviewSection(reports, globalTotals) {
   lines.push(`![${badgeStyle.alt}](https://img.shields.io/badge/tests-${badgeText}-${badgeStyle.badge})`);
 
   const groups = {};
+  const groupOrder = [];
   reports.forEach((report, index) => {
     const title = report.journeyTitle || 'Other';
     if (!groups[title]) {
       groups[title] = [];
+      groupOrder.push(title);
     }
     groups[title].push({ report, index });
   });
 
-  for (const [title, groupReports] of Object.entries(groups)) {
-    lines.push('');
-    lines.push(`**${title}**`);
-    lines.push('|Test Case|Passed|Failed|Errored|Skipped|Pass %|Time|');
-    lines.push('|:---|---:|---:|---:|---:|---:|---:|');
+  lines.push('');
+  lines.push('<table>');
+  lines.push('<thead>');
+  lines.push('<tr><th>Journey</th><th>Test Case</th><th>Passed</th><th>Failed</th><th>Errored</th><th>Skipped</th><th>Pass %</th><th>Time</th></tr>');
+  lines.push('</thead>');
+  lines.push('<tbody>');
 
-    groupReports.forEach(({ report, index }) => {
-      lines.push(
-        `|[${report.displayName}](#user-content-r${index})|${report.passed}|${report.failed}|${report.errored}|${report.skipped}|${report.passPercent}|${report.duration}|`
-      );
+  for (const title of groupOrder) {
+    const groupReports = groups[title];
+    groupReports.forEach(({ report, index }, rowIndex) => {
+      lines.push('<tr>');
+      if (rowIndex === 0) {
+        lines.push(`<td rowspan="${groupReports.length}">${escapeHtml(title)}</td>`);
+      }
+      lines.push(`<td><a href="#user-content-r${index}">${escapeHtml(report.displayName)}</a></td>`);
+      lines.push(`<td align="right">${escapeHtml(report.passed)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.failed)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.errored)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.skipped)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.passPercent)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.duration)}</td>`);
+      lines.push('</tr>');
     });
   }
+
+  lines.push('</tbody>');
+  lines.push('</table>');
 
   return lines.join('\n');
 }
