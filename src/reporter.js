@@ -733,10 +733,6 @@ function buildSelectionSection(selection) {
 
   const lines = [];
   lines.push('## QA Selection');
-  lines.push('');
-  if (Array.isArray(selection.all_cases_journeys) && selection.all_cases_journeys.length > 0) {
-    lines.push(`- Full journey cases: ${selection.all_cases_journeys.map((journey) => `\`${journey}\``).join(', ')}`);
-  }
 
   if (Array.isArray(selection.unmatched_files) && selection.unmatched_files.length > 0) {
     lines.push('');
