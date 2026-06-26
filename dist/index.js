@@ -27171,6 +27171,15 @@ function buildSelection({ manifest, changedFiles, labels, journeyCases, scenario
   const findScenarioSelection = (changedPath) => {
     const normalizedChangedPath = normalizePath(changedPath);
     const absoluteChangedPath = getAbsoluteChangedPath(changedPath);
+    const scenariosRelativePath = normalizePath(path.relative(path.resolve(scenariosPath), absoluteChangedPath));
+
+    if (scenariosRelativePath === 'manifest.yaml') {
+      return {
+        type: 'manifest',
+        journey: '*',
+        relative_path: scenariosRelativePath
+      };
+    }
 
     const smokeRelativePath = normalizePath(path.relative(path.resolve(scenariosPath, 'smoke'), absoluteChangedPath));
     if (smokeRelativePath && !smokeRelativePath.startsWith('../') && smokeRelativePath !== '..' && !smokeRelativePath.includes('/') && smokeRelativePath.endsWith('.http')) {
@@ -27322,8 +27331,12 @@ function buildSelection({ manifest, changedFiles, labels, journeyCases, scenario
     if (scenarioSelections.length > 0) {
       const selectedJourneys = [];
       for (const scenarioSelection of scenarioSelections) {
-        selectedJourneys.push(scenarioSelection.journey);
-        addJourneys([scenarioSelection.journey], true);
+        if (scenarioSelection.journey === '*') {
+          selectedJourneys.push(...addAllJourneys());
+        } else {
+          selectedJourneys.push(scenarioSelection.journey);
+          addJourneys([scenarioSelection.journey], true);
+        }
       }
 
       reasons.push({
