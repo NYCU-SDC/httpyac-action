@@ -26875,6 +26875,7 @@ module.exports = {
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 const fs = (__nccwpck_require__(9896).promises);
+const path = __nccwpck_require__(6928);
 const yaml = __nccwpck_require__(8815);
 const { findJourneysYaml } = __nccwpck_require__(1712);
 
@@ -26909,6 +26910,19 @@ function globToRegex(pattern) {
 
 function matchesPath(filePath, pattern) {
   return globToRegex(pattern).test(filePath);
+}
+
+function normalizePath(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function isPathInside(childPath, parentPath) {
+  const relativePath = normalizePath(path.relative(parentPath, childPath));
+  return relativePath === '' || (!relativePath.startsWith('../') && relativePath !== '..' && !path.isAbsolute(relativePath));
+}
+
+function getAbsoluteChangedPath(filePath) {
+  return path.isAbsolute(filePath) ? path.normalize(filePath) : path.resolve(filePath);
 }
 
 function getPathCandidates(file) {
@@ -27033,6 +27047,8 @@ async function loadJourneyCases(scenariosPath) {
       journeys.set(journeyFile.name, {
         name: journeyFile.name,
         title: config && config.name ? config.name : journeyFile.name,
+        path: journeyFile.path,
+        yamlPath: journeyFile.yamlPath,
         cases: cases.map((testCase, index) => ({
           name: testCase.name || `Case ${index + 1}`,
           path: testCase.path || '',
@@ -27115,7 +27131,7 @@ async function validateManifest(manifest, scenariosPath) {
   }
 }
 
-function buildSelection({ manifest, changedFiles, labels, journeyCases }) {
+function buildSelection({ manifest, changedFiles, labels, journeyCases, scenariosPath }) {
   const selected = new Set();
   const allCasesJourneys = new Set();
   const selectedCases = new Map();
@@ -27150,6 +27166,49 @@ function buildSelection({ manifest, changedFiles, labels, journeyCases }) {
     const journeys = [...journeyCases.keys()];
     addJourneys(journeys, true);
     return journeys;
+  };
+
+  const findScenarioSelection = (changedPath) => {
+    const normalizedChangedPath = normalizePath(changedPath);
+    const absoluteChangedPath = getAbsoluteChangedPath(changedPath);
+
+    const smokeRelativePath = normalizePath(path.relative(path.resolve(scenariosPath, 'smoke'), absoluteChangedPath));
+    if (smokeRelativePath && !smokeRelativePath.startsWith('../') && smokeRelativePath !== '..' && !smokeRelativePath.includes('/') && smokeRelativePath.endsWith('.http')) {
+      return {
+        type: 'smoke',
+        journey: 'smoke',
+        relative_path: smokeRelativePath
+      };
+    }
+
+    for (const [journeyName, journey] of journeyCases.entries()) {
+      const journeyPath = path.resolve(journey.path);
+      if (!isPathInside(absoluteChangedPath, journeyPath)) {
+        continue;
+      }
+
+      const relativePath = normalizePath(path.relative(journeyPath, absoluteChangedPath));
+      if (relativePath === 'journey.yaml' || relativePath.endsWith('.http')) {
+        return {
+          type: relativePath === 'journey.yaml' ? 'journey_yaml' : 'journey_http',
+          journey: journeyName,
+          relative_path: relativePath
+        };
+      }
+    }
+
+    if (normalizedChangedPath.endsWith('/journey.yaml')) {
+      const parentName = normalizedChangedPath.split('/').slice(-2, -1)[0];
+      if (journeyCases.has(parentName)) {
+        return {
+          type: 'journey_yaml',
+          journey: parentName,
+          relative_path: 'journey.yaml'
+        };
+      }
+    }
+
+    return null;
   };
 
   const addCasesForDomain = (domainName) => {
@@ -27248,6 +27307,36 @@ function buildSelection({ manifest, changedFiles, labels, journeyCases }) {
   const impactedDomains = new Map();
 
   for (const file of changedFiles) {
+    const scenarioSelections = [];
+    for (const candidate of getPathCandidates(file)) {
+      const scenarioSelection = findScenarioSelection(candidate.value);
+      if (scenarioSelection) {
+        scenarioSelections.push({
+          ...scenarioSelection,
+          field: candidate.field,
+          path: candidate.value
+        });
+      }
+    }
+
+    if (scenarioSelections.length > 0) {
+      const selectedJourneys = [];
+      for (const scenarioSelection of scenarioSelections) {
+        selectedJourneys.push(scenarioSelection.journey);
+        addJourneys([scenarioSelection.journey], true);
+      }
+
+      reasons.push({
+        type: 'changed_scenario_file',
+        file: file.path,
+        previous_file: file.previousPath || '',
+        status: file.status,
+        selected_journeys: unique(selectedJourneys),
+        matches: scenarioSelections
+      });
+      continue;
+    }
+
     const ignoreResult = shouldIgnoreFile(file, ignorePaths);
     if (ignoreResult.ignored) {
       ignoredFiles.push({
@@ -27322,7 +27411,7 @@ async function selectJourneys(options) {
   await validateManifest(manifest, options.scenariosPath);
   const journeyCases = await loadJourneyCases(options.scenariosPath);
 
-  return buildSelection({ manifest, changedFiles, labels, journeyCases });
+  return buildSelection({ manifest, changedFiles, labels, journeyCases, scenariosPath: options.scenariosPath });
 }
 
 module.exports = {
