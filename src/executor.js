@@ -92,6 +92,13 @@ async function findSmokeHttpFiles(smokeDir) {
     const entries = await fs.readdir(smokeDir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isFile() && entry.name.endsWith('.http')) {
+        const fileContent = await fs.readFile(path.join(smokeDir, entry.name), 'utf8');
+        const nameMatch = fileContent.match(/^#\s*@name\s+(.+)$/m);
+        const titleMatch = fileContent.match(/^#\s*@title\s+(.+)$/m);
+        const testName = nameMatch
+          ? nameMatch[1].trim()
+          : titleMatch ? titleMatch[1].trim() : path.basename(entry.name, '.http');
+
         smokeTests.push({
           name: path.basename(entry.name, '.http'),
           path: smokeDir,
@@ -99,9 +106,10 @@ async function findSmokeHttpFiles(smokeDir) {
             name: 'Smoke',
             description: 'Minimal smoke checks',
             cases: [{
-              name: path.basename(entry.name, '.http'),
+              name: testName,
               description: 'Smoke check',
-              path: entry.name
+              path: entry.name,
+              test: testName
             }]
           }
         });

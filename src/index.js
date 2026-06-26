@@ -49,11 +49,9 @@ function parseEnvInput(envInput) {
 async function main() {
   const scenariosPath = core.getInput('scenarios-path', { required: true });
   const outputDir = core.getInput('output-dir', { required: false }) || './httpyac-results';
-  const runMode = core.getInput('run-mode', { required: false }) || 'all';
   const manifestPath = core.getInput('manifest-path', { required: false });
   const changedFilesPath = core.getInput('changed-files-path', { required: false });
   const labelsInput = core.getInput('labels', { required: false });
-  const journeysInput = core.getInput('journeys', { required: false });
   const smokePathInput = core.getInput('smoke-path', { required: false });
   const rawEnv = core.getInput('env', { required: true });
 
@@ -62,10 +60,6 @@ async function main() {
   console.log('httpYac Action - Phase 1: Test Execution');
   await fs.mkdir(outputDir, { recursive: true });
 
-  if (!['all', 'affected', 'explicit'].includes(runMode)) {
-    throw new Error(`Invalid run-mode: ${runMode}`);
-  }
-  
   // Find all journey.yaml files
   console.log('\nFinding user journeys...');
   const [journeys, skippedJourneys] = await findJourneysYaml(scenariosPath);
@@ -83,20 +77,15 @@ async function main() {
   let journeysToRun = journeys;
   let smokeTests = [];
 
-  if (runMode !== 'all' || manifestPath) {
-    if (!manifestPath) {
-      throw new Error(`manifest-path is required when run-mode is ${runMode}`);
-    }
-    if (runMode === 'affected' && !changedFilesPath) {
-      throw new Error('changed-files-path is required when run-mode is affected');
+  if (manifestPath) {
+    if (!changedFilesPath) {
+      throw new Error('changed-files-path is required when manifest-path is provided');
     }
 
     selection = await selectJourneys({
       manifestPath,
       changedFilesPath,
       labelsInput,
-      journeysInput,
-      mode: runMode,
       scenariosPath
     });
   } else {
@@ -104,8 +93,7 @@ async function main() {
       mode: 'all',
       journeys: journeys.map((journey) => journey.name),
       reasons: [{ type: 'mode', mode: 'all', selected_journeys: journeys.map((journey) => journey.name) }],
-      unmatched_files: [],
-      fallbacks: []
+      unmatched_files: []
     };
   }
 

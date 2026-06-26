@@ -25792,6 +25792,13 @@ async function findSmokeHttpFiles(smokeDir) {
     const entries = await fs.readdir(smokeDir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isFile() && entry.name.endsWith('.http')) {
+        const fileContent = await fs.readFile(path.join(smokeDir, entry.name), 'utf8');
+        const nameMatch = fileContent.match(/^#\s*@name\s+(.+)$/m);
+        const titleMatch = fileContent.match(/^#\s*@title\s+(.+)$/m);
+        const testName = nameMatch
+          ? nameMatch[1].trim()
+          : titleMatch ? titleMatch[1].trim() : path.basename(entry.name, '.http');
+
         smokeTests.push({
           name: path.basename(entry.name, '.http'),
           path: smokeDir,
@@ -25799,9 +25806,10 @@ async function findSmokeHttpFiles(smokeDir) {
             name: 'Smoke',
             description: 'Minimal smoke checks',
             cases: [{
-              name: path.basename(entry.name, '.http'),
+              name: testName,
               description: 'Smoke check',
-              path: entry.name
+              path: entry.name,
+              test: testName
             }]
           }
         });
@@ -26496,59 +26504,6 @@ function formatTriggerList(values = [], maxItems = 3) {
   return visibleValues.join(', ');
 }
 
-function getFallbackTriggerRows(fallback) {
-  if (fallback.type === 'unknown_change' && Array.isArray(fallback.files)) {
-    return fallback.files.map((file) => ({
-      type: fallback.type,
-      domain: '_unmatched_',
-      files: [file].filter(Boolean)
-    }));
-  }
-
-  return [];
-}
-
-function buildFallbackTriggerTable(fallbacks = []) {
-  const rows = fallbacks.flatMap(getFallbackTriggerRows);
-  if (rows.length === 0) {
-    return '';
-  }
-
-  const groupedRows = [...rows.reduce((groups, row) => {
-    const key = `${row.type || 'unknown'}\u0000${row.domain || '_unknown_'}\u0000${row.note || ''}`;
-    if (!groups.has(key)) {
-      groups.set(key, {
-        type: row.type || 'unknown',
-        domain: row.domain || '_unknown_',
-        files: [],
-        note: row.note || ''
-      });
-    }
-
-    groups.get(key).files.push(...(row.files || []));
-    return groups;
-  }, new Map()).values()];
-
-  const maxRows = 8;
-  const visibleRows = groupedRows.slice(0, maxRows);
-  const lines = [];
-  lines.push('**Fallback Triggers**');
-  lines.push('|Type|Domain|Files|Count|');
-  lines.push('|:---|:---|:---|---:|');
-
-  for (const row of visibleRows) {
-    const fileLabel = row.note || formatTriggerList(row.files, 2);
-    const count = row.note ? '' : new Set(row.files || []).size;
-    lines.push(`|\`${escapeTableCell(row.type)}\`|\`${escapeTableCell(row.domain)}\`|${fileLabel}|${count}|`);
-  }
-
-  if (groupedRows.length > visibleRows.length) {
-    lines.push(`|_more_|_|+${groupedRows.length - visibleRows.length} more groups in \`selection.json\`||`);
-  }
-
-  return lines.join('\n');
-}
-
 function buildSelectedDomainTable(selection, availableCases = []) {
   const domainMap = new Map();
 
@@ -26585,14 +26540,6 @@ function buildSelectedDomainTable(selection, availableCases = []) {
         domain.labels.push(reason.label);
         domain.effects.add('label');
       }
-    }
-  }
-
-  for (const fallback of selection.fallbacks || []) {
-    for (const row of getFallbackTriggerRows(fallback)) {
-      const domain = ensureDomain(row.domain);
-      domain.files.push(...(row.files || []));
-      domain.effects.add(fallback.type);
     }
   }
 
@@ -26718,31 +26665,8 @@ function buildSelectionSection(selection) {
   const lines = [];
   lines.push('## QA Selection');
   lines.push('');
-  lines.push(`- Mode: \`${selection.mode}\``);
-  lines.push(`- Selected journeys: ${(selection.journeys || []).map((journey) => `\`${journey}\``).join(', ') || '_None_'}`);
-  if (Array.isArray(selection.cases) && selection.cases.length > 0) {
-    lines.push(`- Selected cases: ${selection.cases.length}`);
-  }
   if (Array.isArray(selection.all_cases_journeys) && selection.all_cases_journeys.length > 0) {
     lines.push(`- Full journey cases: ${selection.all_cases_journeys.map((journey) => `\`${journey}\``).join(', ')}`);
-  }
-
-  if (Array.isArray(selection.fallbacks) && selection.fallbacks.length > 0) {
-    lines.push('');
-    lines.push('**Fallbacks**');
-    for (const fallback of selection.fallbacks) {
-      if (fallback.type === 'unknown_change') {
-        lines.push(`- \`${fallback.type}\`: unmatched files recorded`);
-      } else {
-        lines.push(`- \`${fallback.type || 'unknown'}\``);
-      }
-    }
-
-    const fallbackTriggerTable = buildFallbackTriggerTable(selection.fallbacks);
-    if (fallbackTriggerTable) {
-      lines.push('');
-      lines.push(fallbackTriggerTable);
-    }
   }
 
   if (Array.isArray(selection.unmatched_files) && selection.unmatched_files.length > 0) {
@@ -27090,30 +27014,6 @@ function parseLabels(labelInput) {
     .filter(Boolean);
 }
 
-function parseListInput(value, fieldName) {
-  if (!value) {
-    return [];
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return [];
-  }
-
-  if (trimmed.startsWith('[')) {
-    const parsed = JSON.parse(trimmed);
-    if (!Array.isArray(parsed)) {
-      throw new Error(`${fieldName} JSON must be an array`);
-    }
-    return parsed.map(String);
-  }
-
-  return trimmed
-    .split(/[\n,]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 async function getKnownJourneys(scenariosPath) {
   const knownJourneys = new Set(['smoke']);
 
@@ -27229,17 +27129,14 @@ async function validateManifest(manifest, scenariosPath) {
     validateJourneys(entry.journeys, `labels.${label}`);
     validateDomains(entry.domains, `labels.${label}`);
   }
-
-  return knownJourneys;
 }
 
-function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys, journeyCases }) {
+function buildSelection({ manifest, changedFiles, labels, journeyCases }) {
   const selected = new Set();
   const allCasesJourneys = new Set();
   const selectedCases = new Map();
   const reasons = [];
   const unmatchedFiles = [];
-  const fallbacks = [];
   const ignoredFiles = [];
 
   const addJourneys = (journeys, allCases = false) => {
@@ -27306,8 +27203,7 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
     all_cases_journeys: unique([...allCasesJourneys]),
     reasons,
     unmatched_files: unmatchedFiles,
-    ignored_files: ignoredFiles,
-    fallbacks
+    ignored_files: ignoredFiles
   });
 
   const alwaysRun = manifest.defaults.always_run || [];
@@ -27320,15 +27216,6 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
     });
   }
 
-  if (mode === 'all') {
-    const allJourneys = addAllJourneys();
-    reasons.push({
-      type: 'mode',
-      mode,
-      selected_journeys: allJourneys
-    });
-    return selectedPayload('all');
-  }
 
   let labelRequestedFull = false;
   for (const label of labels) {
@@ -27370,19 +27257,6 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
 
   if (labelRequestedFull) {
     return selectedPayload('full');
-  }
-
-  if (mode === 'explicit') {
-    if (explicitJourneys.length > 0) {
-      addJourneys(explicitJourneys, true);
-      reasons.push({
-        type: 'explicit',
-        source: 'journeys',
-        selected_journeys: explicitJourneys
-      });
-    }
-
-    return selectedPayload('explicit');
   }
 
   const ignorePaths = Array.isArray(manifest.defaults.ignore_paths) ? manifest.defaults.ignore_paths : [];
@@ -27461,29 +27335,16 @@ async function selectJourneys(options) {
   const manifest = await loadManifest(options.manifestPath);
   const changedFiles = options.changedFilesPath ? await loadChangedFiles(options.changedFilesPath) : [];
   const labels = parseLabels(options.labelsInput || '');
-  const explicitJourneys = parseListInput(options.journeysInput || '', 'journeys');
-  const mode = options.mode || 'affected';
-
-  if (!['all', 'affected', 'explicit'].includes(mode)) {
-    throw new Error(`Invalid run mode: ${mode}`);
-  }
-
-  const knownJourneys = await validateManifest(manifest, options.scenariosPath);
+  await validateManifest(manifest, options.scenariosPath);
   const journeyCases = await loadJourneyCases(options.scenariosPath);
-  for (const journey of explicitJourneys) {
-    if (!knownJourneys.has(journey)) {
-      throw new Error(`Explicit journey does not exist: ${journey}`);
-    }
-  }
 
-  return buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys, journeyCases });
+  return buildSelection({ manifest, changedFiles, labels, journeyCases });
 }
 
 module.exports = {
   selectJourneys,
   loadChangedFiles,
   parseLabels,
-  parseListInput,
   shouldIgnoreFile,
   matchesPath
 };
@@ -38056,11 +37917,9 @@ function parseEnvInput(envInput) {
 async function main() {
   const scenariosPath = core.getInput('scenarios-path', { required: true });
   const outputDir = core.getInput('output-dir', { required: false }) || './httpyac-results';
-  const runMode = core.getInput('run-mode', { required: false }) || 'all';
   const manifestPath = core.getInput('manifest-path', { required: false });
   const changedFilesPath = core.getInput('changed-files-path', { required: false });
   const labelsInput = core.getInput('labels', { required: false });
-  const journeysInput = core.getInput('journeys', { required: false });
   const smokePathInput = core.getInput('smoke-path', { required: false });
   const rawEnv = core.getInput('env', { required: true });
 
@@ -38069,10 +37928,6 @@ async function main() {
   console.log('httpYac Action - Phase 1: Test Execution');
   await fs.mkdir(outputDir, { recursive: true });
 
-  if (!['all', 'affected', 'explicit'].includes(runMode)) {
-    throw new Error(`Invalid run-mode: ${runMode}`);
-  }
-  
   // Find all journey.yaml files
   console.log('\nFinding user journeys...');
   const [journeys, skippedJourneys] = await findJourneysYaml(scenariosPath);
@@ -38090,20 +37945,15 @@ async function main() {
   let journeysToRun = journeys;
   let smokeTests = [];
 
-  if (runMode !== 'all' || manifestPath) {
-    if (!manifestPath) {
-      throw new Error(`manifest-path is required when run-mode is ${runMode}`);
-    }
-    if (runMode === 'affected' && !changedFilesPath) {
-      throw new Error('changed-files-path is required when run-mode is affected');
+  if (manifestPath) {
+    if (!changedFilesPath) {
+      throw new Error('changed-files-path is required when manifest-path is provided');
     }
 
     selection = await selectJourneys({
       manifestPath,
       changedFilesPath,
       labelsInput,
-      journeysInput,
-      mode: runMode,
       scenariosPath
     });
   } else {
@@ -38111,8 +37961,7 @@ async function main() {
       mode: 'all',
       journeys: journeys.map((journey) => journey.name),
       reasons: [{ type: 'mode', mode: 'all', selected_journeys: journeys.map((journey) => journey.name) }],
-      unmatched_files: [],
-      fallbacks: []
+      unmatched_files: []
     };
   }
 

@@ -134,30 +134,6 @@ function parseLabels(labelInput) {
     .filter(Boolean);
 }
 
-function parseListInput(value, fieldName) {
-  if (!value) {
-    return [];
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return [];
-  }
-
-  if (trimmed.startsWith('[')) {
-    const parsed = JSON.parse(trimmed);
-    if (!Array.isArray(parsed)) {
-      throw new Error(`${fieldName} JSON must be an array`);
-    }
-    return parsed.map(String);
-  }
-
-  return trimmed
-    .split(/[\n,]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 async function getKnownJourneys(scenariosPath) {
   const knownJourneys = new Set(['smoke']);
 
@@ -273,17 +249,14 @@ async function validateManifest(manifest, scenariosPath) {
     validateJourneys(entry.journeys, `labels.${label}`);
     validateDomains(entry.domains, `labels.${label}`);
   }
-
-  return knownJourneys;
 }
 
-function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys, journeyCases }) {
+function buildSelection({ manifest, changedFiles, labels, journeyCases }) {
   const selected = new Set();
   const allCasesJourneys = new Set();
   const selectedCases = new Map();
   const reasons = [];
   const unmatchedFiles = [];
-  const fallbacks = [];
   const ignoredFiles = [];
 
   const addJourneys = (journeys, allCases = false) => {
@@ -350,8 +323,7 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
     all_cases_journeys: unique([...allCasesJourneys]),
     reasons,
     unmatched_files: unmatchedFiles,
-    ignored_files: ignoredFiles,
-    fallbacks
+    ignored_files: ignoredFiles
   });
 
   const alwaysRun = manifest.defaults.always_run || [];
@@ -364,15 +336,6 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
     });
   }
 
-  if (mode === 'all') {
-    const allJourneys = addAllJourneys();
-    reasons.push({
-      type: 'mode',
-      mode,
-      selected_journeys: allJourneys
-    });
-    return selectedPayload('all');
-  }
 
   let labelRequestedFull = false;
   for (const label of labels) {
@@ -414,19 +377,6 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
 
   if (labelRequestedFull) {
     return selectedPayload('full');
-  }
-
-  if (mode === 'explicit') {
-    if (explicitJourneys.length > 0) {
-      addJourneys(explicitJourneys, true);
-      reasons.push({
-        type: 'explicit',
-        source: 'journeys',
-        selected_journeys: explicitJourneys
-      });
-    }
-
-    return selectedPayload('explicit');
   }
 
   const ignorePaths = Array.isArray(manifest.defaults.ignore_paths) ? manifest.defaults.ignore_paths : [];
@@ -505,29 +455,16 @@ async function selectJourneys(options) {
   const manifest = await loadManifest(options.manifestPath);
   const changedFiles = options.changedFilesPath ? await loadChangedFiles(options.changedFilesPath) : [];
   const labels = parseLabels(options.labelsInput || '');
-  const explicitJourneys = parseListInput(options.journeysInput || '', 'journeys');
-  const mode = options.mode || 'affected';
-
-  if (!['all', 'affected', 'explicit'].includes(mode)) {
-    throw new Error(`Invalid run mode: ${mode}`);
-  }
-
-  const knownJourneys = await validateManifest(manifest, options.scenariosPath);
+  await validateManifest(manifest, options.scenariosPath);
   const journeyCases = await loadJourneyCases(options.scenariosPath);
-  for (const journey of explicitJourneys) {
-    if (!knownJourneys.has(journey)) {
-      throw new Error(`Explicit journey does not exist: ${journey}`);
-    }
-  }
 
-  return buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys, journeyCases });
+  return buildSelection({ manifest, changedFiles, labels, journeyCases });
 }
 
 module.exports = {
   selectJourneys,
   loadChangedFiles,
   parseLabels,
-  parseListInput,
   shouldIgnoreFile,
   matchesPath
 };
