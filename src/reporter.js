@@ -573,59 +573,6 @@ function formatTriggerList(values = [], maxItems = 3) {
   return visibleValues.join(', ');
 }
 
-function getFallbackTriggerRows(fallback) {
-  if (fallback.type === 'unknown_change' && Array.isArray(fallback.files)) {
-    return fallback.files.map((file) => ({
-      type: fallback.type,
-      domain: '_unmatched_',
-      files: [file].filter(Boolean)
-    }));
-  }
-
-  return [];
-}
-
-function buildFallbackTriggerTable(fallbacks = []) {
-  const rows = fallbacks.flatMap(getFallbackTriggerRows);
-  if (rows.length === 0) {
-    return '';
-  }
-
-  const groupedRows = [...rows.reduce((groups, row) => {
-    const key = `${row.type || 'unknown'}\u0000${row.domain || '_unknown_'}\u0000${row.note || ''}`;
-    if (!groups.has(key)) {
-      groups.set(key, {
-        type: row.type || 'unknown',
-        domain: row.domain || '_unknown_',
-        files: [],
-        note: row.note || ''
-      });
-    }
-
-    groups.get(key).files.push(...(row.files || []));
-    return groups;
-  }, new Map()).values()];
-
-  const maxRows = 8;
-  const visibleRows = groupedRows.slice(0, maxRows);
-  const lines = [];
-  lines.push('**Fallback Triggers**');
-  lines.push('|Type|Domain|Files|Count|');
-  lines.push('|:---|:---|:---|---:|');
-
-  for (const row of visibleRows) {
-    const fileLabel = row.note || formatTriggerList(row.files, 2);
-    const count = row.note ? '' : new Set(row.files || []).size;
-    lines.push(`|\`${escapeTableCell(row.type)}\`|\`${escapeTableCell(row.domain)}\`|${fileLabel}|${count}|`);
-  }
-
-  if (groupedRows.length > visibleRows.length) {
-    lines.push(`|_more_|_|+${groupedRows.length - visibleRows.length} more groups in \`selection.json\`||`);
-  }
-
-  return lines.join('\n');
-}
-
 function buildSelectedDomainTable(selection, availableCases = []) {
   const domainMap = new Map();
 
@@ -662,14 +609,6 @@ function buildSelectedDomainTable(selection, availableCases = []) {
         domain.labels.push(reason.label);
         domain.effects.add('label');
       }
-    }
-  }
-
-  for (const fallback of selection.fallbacks || []) {
-    for (const row of getFallbackTriggerRows(fallback)) {
-      const domain = ensureDomain(row.domain);
-      domain.files.push(...(row.files || []));
-      domain.effects.add(fallback.type);
     }
   }
 
@@ -795,31 +734,8 @@ function buildSelectionSection(selection) {
   const lines = [];
   lines.push('## QA Selection');
   lines.push('');
-  lines.push(`- Mode: \`${selection.mode}\``);
-  lines.push(`- Selected journeys: ${(selection.journeys || []).map((journey) => `\`${journey}\``).join(', ') || '_None_'}`);
-  if (Array.isArray(selection.cases) && selection.cases.length > 0) {
-    lines.push(`- Selected cases: ${selection.cases.length}`);
-  }
   if (Array.isArray(selection.all_cases_journeys) && selection.all_cases_journeys.length > 0) {
     lines.push(`- Full journey cases: ${selection.all_cases_journeys.map((journey) => `\`${journey}\``).join(', ')}`);
-  }
-
-  if (Array.isArray(selection.fallbacks) && selection.fallbacks.length > 0) {
-    lines.push('');
-    lines.push('**Fallbacks**');
-    for (const fallback of selection.fallbacks) {
-      if (fallback.type === 'unknown_change') {
-        lines.push(`- \`${fallback.type}\`: unmatched files recorded`);
-      } else {
-        lines.push(`- \`${fallback.type || 'unknown'}\``);
-      }
-    }
-
-    const fallbackTriggerTable = buildFallbackTriggerTable(selection.fallbacks);
-    if (fallbackTriggerTable) {
-      lines.push('');
-      lines.push(fallbackTriggerTable);
-    }
   }
 
   if (Array.isArray(selection.unmatched_files) && selection.unmatched_files.length > 0) {
