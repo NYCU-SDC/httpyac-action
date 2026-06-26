@@ -54,35 +54,35 @@ function classifyHttpYacResult(result) {
 
 async function findJourneysYaml(baseDir) {
   const journeys = [];
-  const skippedJourneys = [];
-  
-  try {
-    const entries = await fs.readdir(baseDir, { withFileTypes: true });
-    
+
+  async function walk(currentDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    const hasJourneyYaml = entries.some((entry) => entry.isFile() && entry.name === 'journey.yaml');
+
+    if (hasJourneyYaml) {
+      journeys.push({
+        name: path.basename(currentDir),
+        path: currentDir,
+        yamlPath: path.join(currentDir, 'journey.yaml')
+      });
+      return;
+    }
+
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        const journeyPath = path.join(baseDir, entry.name);
-        const yamlPath = path.join(journeyPath, 'journey.yaml');
-        
-        try {
-          await fs.access(yamlPath);
-          journeys.push({
-            name: entry.name,
-            path: journeyPath,
-            yamlPath: yamlPath
-          });
-        } catch (err) {
-          // journey.yaml doesn't exist in this directory, skip it
-          skippedJourneys.push(entry.name);
-        }
+        await walk(path.join(currentDir, entry.name));
       }
     }
+  }
+
+  try {
+    await walk(baseDir);
   } catch (err) {
     console.error(`Error reading scenarios directory: ${err.message}`);
     throw err;
   }
-  
-  return [journeys, skippedJourneys];
+
+  return [journeys, []];
 }
 
 async function findSmokeHttpFiles(smokeDir) {

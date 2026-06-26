@@ -1,6 +1,6 @@
 const fs = require('fs').promises;
-const path = require('path');
 const yaml = require('yaml');
+const { findJourneysYaml } = require('./executor');
 
 function unique(values) {
   return [...new Set(values)];
@@ -136,17 +136,10 @@ function parseLabels(labelInput) {
 
 async function getKnownJourneys(scenariosPath) {
   const knownJourneys = new Set(['smoke']);
+  const [journeys] = await findJourneysYaml(scenariosPath);
 
-  const entries = await fs.readdir(scenariosPath, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      try {
-        await fs.access(path.join(scenariosPath, entry.name, 'journey.yaml'));
-        knownJourneys.add(entry.name);
-      } catch (_err) {
-        // Directory without journey.yaml is not a selectable user journey.
-      }
-    }
+  for (const journey of journeys) {
+    knownJourneys.add(journey.name);
   }
 
   return knownJourneys;
@@ -154,21 +147,16 @@ async function getKnownJourneys(scenariosPath) {
 
 async function loadJourneyCases(scenariosPath) {
   const journeys = new Map();
-  const entries = await fs.readdir(scenariosPath, { withFileTypes: true });
+  const [journeyFiles] = await findJourneysYaml(scenariosPath);
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-
-    const journeyYamlPath = path.join(scenariosPath, entry.name, 'journey.yaml');
+  for (const journeyFile of journeyFiles) {
     try {
-      const content = await fs.readFile(journeyYamlPath, 'utf8');
+      const content = await fs.readFile(journeyFile.yamlPath, 'utf8');
       const config = yaml.parse(content);
       const cases = Array.isArray(config && config.cases) ? config.cases : [];
-      journeys.set(entry.name, {
-        name: entry.name,
-        title: config && config.name ? config.name : entry.name,
+      journeys.set(journeyFile.name, {
+        name: journeyFile.name,
+        title: config && config.name ? config.name : journeyFile.name,
         cases: cases.map((testCase, index) => ({
           name: testCase.name || `Case ${index + 1}`,
           path: testCase.path || '',
@@ -177,7 +165,7 @@ async function loadJourneyCases(scenariosPath) {
         }))
       });
     } catch (_err) {
-      // Directory without journey.yaml is not a selectable user journey.
+      // Directories with unreadable or invalid journey.yaml are ignored by the selector.
     }
   }
 

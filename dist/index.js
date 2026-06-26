@@ -25754,35 +25754,35 @@ function classifyHttpYacResult(result) {
 
 async function findJourneysYaml(baseDir) {
   const journeys = [];
-  const skippedJourneys = [];
-  
-  try {
-    const entries = await fs.readdir(baseDir, { withFileTypes: true });
-    
+
+  async function walk(currentDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    const hasJourneyYaml = entries.some((entry) => entry.isFile() && entry.name === 'journey.yaml');
+
+    if (hasJourneyYaml) {
+      journeys.push({
+        name: path.basename(currentDir),
+        path: currentDir,
+        yamlPath: path.join(currentDir, 'journey.yaml')
+      });
+      return;
+    }
+
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        const journeyPath = path.join(baseDir, entry.name);
-        const yamlPath = path.join(journeyPath, 'journey.yaml');
-        
-        try {
-          await fs.access(yamlPath);
-          journeys.push({
-            name: entry.name,
-            path: journeyPath,
-            yamlPath: yamlPath
-          });
-        } catch (err) {
-          // journey.yaml doesn't exist in this directory, skip it
-          skippedJourneys.push(entry.name);
-        }
+        await walk(path.join(currentDir, entry.name));
       }
     }
+  }
+
+  try {
+    await walk(baseDir);
   } catch (err) {
     console.error(`Error reading scenarios directory: ${err.message}`);
     throw err;
   }
-  
-  return [journeys, skippedJourneys];
+
+  return [journeys, []];
 }
 
 async function findSmokeHttpFiles(smokeDir) {
@@ -26879,8 +26879,8 @@ module.exports = {
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 const fs = (__nccwpck_require__(9896).promises);
-const path = __nccwpck_require__(6928);
 const yaml = __nccwpck_require__(8815);
+const { findJourneysYaml } = __nccwpck_require__(1712);
 
 function unique(values) {
   return [...new Set(values)];
@@ -27016,17 +27016,10 @@ function parseLabels(labelInput) {
 
 async function getKnownJourneys(scenariosPath) {
   const knownJourneys = new Set(['smoke']);
+  const [journeys] = await findJourneysYaml(scenariosPath);
 
-  const entries = await fs.readdir(scenariosPath, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      try {
-        await fs.access(path.join(scenariosPath, entry.name, 'journey.yaml'));
-        knownJourneys.add(entry.name);
-      } catch (_err) {
-        // Directory without journey.yaml is not a selectable user journey.
-      }
-    }
+  for (const journey of journeys) {
+    knownJourneys.add(journey.name);
   }
 
   return knownJourneys;
@@ -27034,21 +27027,16 @@ async function getKnownJourneys(scenariosPath) {
 
 async function loadJourneyCases(scenariosPath) {
   const journeys = new Map();
-  const entries = await fs.readdir(scenariosPath, { withFileTypes: true });
+  const [journeyFiles] = await findJourneysYaml(scenariosPath);
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-
-    const journeyYamlPath = path.join(scenariosPath, entry.name, 'journey.yaml');
+  for (const journeyFile of journeyFiles) {
     try {
-      const content = await fs.readFile(journeyYamlPath, 'utf8');
+      const content = await fs.readFile(journeyFile.yamlPath, 'utf8');
       const config = yaml.parse(content);
       const cases = Array.isArray(config && config.cases) ? config.cases : [];
-      journeys.set(entry.name, {
-        name: entry.name,
-        title: config && config.name ? config.name : entry.name,
+      journeys.set(journeyFile.name, {
+        name: journeyFile.name,
+        title: config && config.name ? config.name : journeyFile.name,
         cases: cases.map((testCase, index) => ({
           name: testCase.name || `Case ${index + 1}`,
           path: testCase.path || '',
@@ -27057,7 +27045,7 @@ async function loadJourneyCases(scenariosPath) {
         }))
       });
     } catch (_err) {
-      // Directory without journey.yaml is not a selectable user journey.
+      // Directories with unreadable or invalid journey.yaml are ignored by the selector.
     }
   }
 
@@ -37917,10 +37905,10 @@ function parseEnvInput(envInput) {
 async function main() {
   const scenariosPath = core.getInput('scenarios-path', { required: true });
   const outputDir = core.getInput('output-dir', { required: false }) || './httpyac-results';
-  const manifestPath = core.getInput('manifest-path', { required: false });
   const changedFilesPath = core.getInput('changed-files-path', { required: false });
   const labelsInput = core.getInput('labels', { required: false });
-  const smokePathInput = core.getInput('smoke-path', { required: false });
+  const manifestPath = path.join(scenariosPath, 'manifest.yaml');
+  const smokePath = path.join(scenariosPath, 'smoke');
   const rawEnv = core.getInput('env', { required: true });
 
   const customEnv = parseEnvInput(rawEnv);
@@ -37945,9 +37933,11 @@ async function main() {
   let journeysToRun = journeys;
   let smokeTests = [];
 
-  if (manifestPath) {
-    if (!changedFilesPath) {
-      throw new Error('changed-files-path is required when manifest-path is provided');
+  if (changedFilesPath) {
+    try {
+      await fs.access(manifestPath);
+    } catch (_err) {
+      throw new Error(`changed-files-path requires manifest.yaml at ${manifestPath}`);
     }
 
     selection = await selectJourneys({
@@ -37988,8 +37978,6 @@ async function main() {
   journeysToRun = journeys.filter((journey) => selectedJourneySet.has(journey.name));
 
   if (selectedJourneySet.has('smoke')) {
-    const smokePath = smokePathInput
-      || path.resolve(scenariosPath, '..', 'smoke');
     smokeTests = await findSmokeHttpFiles(smokePath);
     if (smokeTests.length === 0) {
       throw new Error(`Selected smoke journey but no .http files were found in ${smokePath}`);

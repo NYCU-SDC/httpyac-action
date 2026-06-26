@@ -49,10 +49,10 @@ function parseEnvInput(envInput) {
 async function main() {
   const scenariosPath = core.getInput('scenarios-path', { required: true });
   const outputDir = core.getInput('output-dir', { required: false }) || './httpyac-results';
-  const manifestPath = core.getInput('manifest-path', { required: false });
   const changedFilesPath = core.getInput('changed-files-path', { required: false });
   const labelsInput = core.getInput('labels', { required: false });
-  const smokePathInput = core.getInput('smoke-path', { required: false });
+  const manifestPath = path.join(scenariosPath, 'manifest.yaml');
+  const smokePath = path.join(scenariosPath, 'smoke');
   const rawEnv = core.getInput('env', { required: true });
 
   const customEnv = parseEnvInput(rawEnv);
@@ -77,9 +77,11 @@ async function main() {
   let journeysToRun = journeys;
   let smokeTests = [];
 
-  if (manifestPath) {
-    if (!changedFilesPath) {
-      throw new Error('changed-files-path is required when manifest-path is provided');
+  if (changedFilesPath) {
+    try {
+      await fs.access(manifestPath);
+    } catch (_err) {
+      throw new Error(`changed-files-path requires manifest.yaml at ${manifestPath}`);
     }
 
     selection = await selectJourneys({
@@ -120,8 +122,6 @@ async function main() {
   journeysToRun = journeys.filter((journey) => selectedJourneySet.has(journey.name));
 
   if (selectedJourneySet.has('smoke')) {
-    const smokePath = smokePathInput
-      || path.resolve(scenariosPath, '..', 'smoke');
     smokeTests = await findSmokeHttpFiles(smokePath);
     if (smokeTests.length === 0) {
       throw new Error(`Selected smoke journey but no .http files were found in ${smokePath}`);
