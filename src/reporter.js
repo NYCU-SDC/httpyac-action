@@ -574,37 +574,12 @@ function formatTriggerList(values = [], maxItems = 3) {
 }
 
 function getFallbackTriggerRows(fallback) {
-  if (fallback.type === 'domain_risk' && Array.isArray(fallback.matches)) {
-    return fallback.matches.map((match) => ({
-      type: fallback.type,
-      domain: match.domain || '',
-      files: [match.file].filter(Boolean)
-    }));
-  }
-
   if (fallback.type === 'unknown_change' && Array.isArray(fallback.files)) {
     return fallback.files.map((file) => ({
       type: fallback.type,
       domain: '_unmatched_',
       files: [file].filter(Boolean)
     }));
-  }
-
-  if (fallback.type === 'uncovered_domain' && Array.isArray(fallback.domains)) {
-    return fallback.domains.map((domain) => ({
-      type: fallback.type,
-      domain,
-      files: []
-    }));
-  }
-
-  if (fallback.type === 'large_change') {
-    return [{
-      type: fallback.type,
-      domain: '_all_',
-      files: [],
-      note: `${fallback.changed_file_count || 0} files > ${fallback.threshold || 0}`
-    }];
   }
 
   return [];
@@ -673,9 +648,6 @@ function buildSelectedDomainTable(selection, availableCases = []) {
       if (reason.file) {
         domain.files.push(reason.file);
       }
-      if (reason.risk === 'full') {
-        domain.effects.add('full fallback');
-      }
     }
 
     if (reason.type === 'domain_selection' && reason.domain) {
@@ -697,7 +669,7 @@ function buildSelectedDomainTable(selection, availableCases = []) {
     for (const row of getFallbackTriggerRows(fallback)) {
       const domain = ensureDomain(row.domain);
       domain.files.push(...(row.files || []));
-      domain.effects.add(fallback.type === 'domain_risk' ? 'full fallback' : fallback.type);
+      domain.effects.add(fallback.type);
     }
   }
 
@@ -789,6 +761,26 @@ function buildJourneyCasesTable(availableCases, isCaseSelected) {
   return lines.join('\n');
 }
 
+function buildUnknownChangesList(unmatchedFiles = []) {
+  const uniqueFiles = [...new Set(unmatchedFiles.filter(Boolean))];
+  if (uniqueFiles.length === 0) {
+    return '';
+  }
+
+  const maxRows = 20;
+  const lines = [];
+  lines.push('**Unknown Changes**');
+  lines.push('');
+  for (const file of uniqueFiles.slice(0, maxRows)) {
+    lines.push(`- \`${escapeTableCell(file)}\``);
+  }
+  if (uniqueFiles.length > maxRows) {
+    lines.push(`- _+${uniqueFiles.length - maxRows} more in \`selection.json\`_`);
+  }
+
+  return lines.join('\n');
+}
+
 function buildSelectionSection(selection) {
   if (!selection) {
     return '';
@@ -816,10 +808,8 @@ function buildSelectionSection(selection) {
     lines.push('');
     lines.push('**Fallbacks**');
     for (const fallback of selection.fallbacks) {
-      if (fallback.type === 'large_change') {
-        lines.push(`- \`${fallback.type}\`: ${fallback.changed_file_count} changed files exceeded threshold ${fallback.threshold}`);
-      } else if (fallback.type === 'unknown_change') {
-        lines.push(`- \`${fallback.type}\`: unmatched files triggered full selection`);
+      if (fallback.type === 'unknown_change') {
+        lines.push(`- \`${fallback.type}\`: unmatched files recorded`);
       } else {
         lines.push(`- \`${fallback.type || 'unknown'}\``);
       }
@@ -830,6 +820,11 @@ function buildSelectionSection(selection) {
       lines.push('');
       lines.push(fallbackTriggerTable);
     }
+  }
+
+  if (Array.isArray(selection.unmatched_files) && selection.unmatched_files.length > 0) {
+    lines.push('');
+    lines.push(buildUnknownChangesList(selection.unmatched_files));
   }
 
   const selectedDomainTable = buildSelectedDomainTable(selection, availableCases);

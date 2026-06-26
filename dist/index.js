@@ -26497,37 +26497,12 @@ function formatTriggerList(values = [], maxItems = 3) {
 }
 
 function getFallbackTriggerRows(fallback) {
-  if (fallback.type === 'domain_risk' && Array.isArray(fallback.matches)) {
-    return fallback.matches.map((match) => ({
-      type: fallback.type,
-      domain: match.domain || '',
-      files: [match.file].filter(Boolean)
-    }));
-  }
-
   if (fallback.type === 'unknown_change' && Array.isArray(fallback.files)) {
     return fallback.files.map((file) => ({
       type: fallback.type,
       domain: '_unmatched_',
       files: [file].filter(Boolean)
     }));
-  }
-
-  if (fallback.type === 'uncovered_domain' && Array.isArray(fallback.domains)) {
-    return fallback.domains.map((domain) => ({
-      type: fallback.type,
-      domain,
-      files: []
-    }));
-  }
-
-  if (fallback.type === 'large_change') {
-    return [{
-      type: fallback.type,
-      domain: '_all_',
-      files: [],
-      note: `${fallback.changed_file_count || 0} files > ${fallback.threshold || 0}`
-    }];
   }
 
   return [];
@@ -26596,9 +26571,6 @@ function buildSelectedDomainTable(selection, availableCases = []) {
       if (reason.file) {
         domain.files.push(reason.file);
       }
-      if (reason.risk === 'full') {
-        domain.effects.add('full fallback');
-      }
     }
 
     if (reason.type === 'domain_selection' && reason.domain) {
@@ -26620,7 +26592,7 @@ function buildSelectedDomainTable(selection, availableCases = []) {
     for (const row of getFallbackTriggerRows(fallback)) {
       const domain = ensureDomain(row.domain);
       domain.files.push(...(row.files || []));
-      domain.effects.add(fallback.type === 'domain_risk' ? 'full fallback' : fallback.type);
+      domain.effects.add(fallback.type);
     }
   }
 
@@ -26712,6 +26684,26 @@ function buildJourneyCasesTable(availableCases, isCaseSelected) {
   return lines.join('\n');
 }
 
+function buildUnknownChangesList(unmatchedFiles = []) {
+  const uniqueFiles = [...new Set(unmatchedFiles.filter(Boolean))];
+  if (uniqueFiles.length === 0) {
+    return '';
+  }
+
+  const maxRows = 20;
+  const lines = [];
+  lines.push('**Unknown Changes**');
+  lines.push('');
+  for (const file of uniqueFiles.slice(0, maxRows)) {
+    lines.push(`- \`${escapeTableCell(file)}\``);
+  }
+  if (uniqueFiles.length > maxRows) {
+    lines.push(`- _+${uniqueFiles.length - maxRows} more in \`selection.json\`_`);
+  }
+
+  return lines.join('\n');
+}
+
 function buildSelectionSection(selection) {
   if (!selection) {
     return '';
@@ -26739,10 +26731,8 @@ function buildSelectionSection(selection) {
     lines.push('');
     lines.push('**Fallbacks**');
     for (const fallback of selection.fallbacks) {
-      if (fallback.type === 'large_change') {
-        lines.push(`- \`${fallback.type}\`: ${fallback.changed_file_count} changed files exceeded threshold ${fallback.threshold}`);
-      } else if (fallback.type === 'unknown_change') {
-        lines.push(`- \`${fallback.type}\`: unmatched files triggered full selection`);
+      if (fallback.type === 'unknown_change') {
+        lines.push(`- \`${fallback.type}\`: unmatched files recorded`);
       } else {
         lines.push(`- \`${fallback.type || 'unknown'}\``);
       }
@@ -26753,6 +26743,11 @@ function buildSelectionSection(selection) {
       lines.push('');
       lines.push(fallbackTriggerTable);
     }
+  }
+
+  if (Array.isArray(selection.unmatched_files) && selection.unmatched_files.length > 0) {
+    lines.push('');
+    lines.push(buildUnknownChangesList(selection.unmatched_files));
   }
 
   const selectedDomainTable = buildSelectedDomainTable(selection, availableCases);
@@ -27222,9 +27217,6 @@ async function validateManifest(manifest, scenariosPath) {
     if (!Array.isArray(domain.paths) || domain.paths.length === 0) {
       throw new Error(`domains.${domainName}.paths must define at least one path`);
     }
-    if (domain.risk && domain.risk !== 'full') {
-      throw new Error(`domains.${domainName}.risk must be full when defined`);
-    }
   }
 
   for (const [label, entry] of Object.entries(manifest.labels || {})) {
@@ -27394,21 +27386,8 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
   }
 
   const ignorePaths = Array.isArray(manifest.defaults.ignore_paths) ? manifest.defaults.ignore_paths : [];
-  const threshold = Number(manifest.defaults.large_change_threshold || 0);
-  if (threshold > 0 && changedFiles.length > threshold) {
-    const allJourneys = addAllJourneys();
-    fallbacks.push({
-      type: 'large_change',
-      changed_file_count: changedFiles.length,
-      threshold,
-      selected_journeys: allJourneys
-    });
-    return selectedPayload('full');
-  }
-
   const domainEntries = Object.entries(manifest.domains || {});
   const impactedDomains = new Map();
-  const fullRiskDomainMatches = [];
 
   for (const file of changedFiles) {
     const ignoreResult = shouldIgnoreFile(file, ignorePaths);
@@ -27455,41 +27434,13 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
         status: file.status,
         matched_domain: domainName,
         matched_paths: unique(matches.map((match) => match.pattern)),
-        matched_file_paths: matches,
-        risk: domain.risk || ''
+        matched_file_paths: matches
       });
-
-      if (domain.risk === 'full') {
-        fullRiskDomainMatches.push({
-          domain: domainName,
-          file: file.path
-        });
-      }
     }
 
     if (matchedDomains.length === 0) {
       unmatchedFiles.push(file.path);
     }
-  }
-
-  if (fullRiskDomainMatches.length > 0) {
-    const allJourneys = addAllJourneys();
-    fallbacks.push({
-      type: 'domain_risk',
-      matches: fullRiskDomainMatches,
-      selected_journeys: allJourneys
-    });
-    return selectedPayload('full');
-  }
-
-  if (unmatchedFiles.length > 0 && manifest.defaults.unknown_change_policy === 'full') {
-    const allJourneys = addAllJourneys();
-    fallbacks.push({
-      type: 'unknown_change',
-      files: unmatchedFiles,
-      selected_journeys: allJourneys
-    });
-    return selectedPayload('full');
   }
 
   for (const [domainName] of impactedDomains) {
@@ -27501,20 +27452,6 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
       files: unique(impactedDomains.get(domainName)),
       selected_cases: domainSelectedCases
     });
-  }
-
-  const uncoveredDomains = [...impactedDomains.keys()].filter((domainName) => {
-    return ![...selectedCases.values()].some((testCase) => (testCase.domains || []).includes(domainName));
-  });
-
-  if (uncoveredDomains.length > 0 && manifest.defaults.unknown_change_policy === 'full') {
-    const allJourneys = addAllJourneys();
-    fallbacks.push({
-      type: 'uncovered_domain',
-      domains: uncoveredDomains,
-      selected_journeys: allJourneys
-    });
-    return selectedPayload('full');
   }
 
   return selectedPayload('affected');

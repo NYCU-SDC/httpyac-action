@@ -261,9 +261,6 @@ async function validateManifest(manifest, scenariosPath) {
     if (!Array.isArray(domain.paths) || domain.paths.length === 0) {
       throw new Error(`domains.${domainName}.paths must define at least one path`);
     }
-    if (domain.risk && domain.risk !== 'full') {
-      throw new Error(`domains.${domainName}.risk must be full when defined`);
-    }
   }
 
   for (const [label, entry] of Object.entries(manifest.labels || {})) {
@@ -433,21 +430,8 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
   }
 
   const ignorePaths = Array.isArray(manifest.defaults.ignore_paths) ? manifest.defaults.ignore_paths : [];
-  const threshold = Number(manifest.defaults.large_change_threshold || 0);
-  if (threshold > 0 && changedFiles.length > threshold) {
-    const allJourneys = addAllJourneys();
-    fallbacks.push({
-      type: 'large_change',
-      changed_file_count: changedFiles.length,
-      threshold,
-      selected_journeys: allJourneys
-    });
-    return selectedPayload('full');
-  }
-
   const domainEntries = Object.entries(manifest.domains || {});
   const impactedDomains = new Map();
-  const fullRiskDomainMatches = [];
 
   for (const file of changedFiles) {
     const ignoreResult = shouldIgnoreFile(file, ignorePaths);
@@ -494,41 +478,13 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
         status: file.status,
         matched_domain: domainName,
         matched_paths: unique(matches.map((match) => match.pattern)),
-        matched_file_paths: matches,
-        risk: domain.risk || ''
+        matched_file_paths: matches
       });
-
-      if (domain.risk === 'full') {
-        fullRiskDomainMatches.push({
-          domain: domainName,
-          file: file.path
-        });
-      }
     }
 
     if (matchedDomains.length === 0) {
       unmatchedFiles.push(file.path);
     }
-  }
-
-  if (fullRiskDomainMatches.length > 0) {
-    const allJourneys = addAllJourneys();
-    fallbacks.push({
-      type: 'domain_risk',
-      matches: fullRiskDomainMatches,
-      selected_journeys: allJourneys
-    });
-    return selectedPayload('full');
-  }
-
-  if (unmatchedFiles.length > 0 && manifest.defaults.unknown_change_policy === 'full') {
-    const allJourneys = addAllJourneys();
-    fallbacks.push({
-      type: 'unknown_change',
-      files: unmatchedFiles,
-      selected_journeys: allJourneys
-    });
-    return selectedPayload('full');
   }
 
   for (const [domainName] of impactedDomains) {
@@ -540,20 +496,6 @@ function buildSelection({ manifest, changedFiles, labels, mode, explicitJourneys
       files: unique(impactedDomains.get(domainName)),
       selected_cases: domainSelectedCases
     });
-  }
-
-  const uncoveredDomains = [...impactedDomains.keys()].filter((domainName) => {
-    return ![...selectedCases.values()].some((testCase) => (testCase.domains || []).includes(domainName));
-  });
-
-  if (uncoveredDomains.length > 0 && manifest.defaults.unknown_change_policy === 'full') {
-    const allJourneys = addAllJourneys();
-    fallbacks.push({
-      type: 'uncovered_domain',
-      domains: uncoveredDomains,
-      selected_journeys: allJourneys
-    });
-    return selectedPayload('full');
   }
 
   return selectedPayload('affected');
