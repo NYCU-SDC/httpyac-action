@@ -142,12 +142,12 @@ async function main() {
   }
   
   const results = [];
+  let smokeCaseIndex = 0;
 
   for (const smokeTest of smokeTests) {
-    let caseIndex = 0;
     for (const testCase of smokeTest.config.cases) {
-      caseIndex++;
-      const outputFileName = `smoke-${caseIndex}.json`;
+      smokeCaseIndex++;
+      const outputFileName = `smoke-${smokeCaseIndex}.json`;
       const outputPath = path.join(outputDir, outputFileName);
       const metadataResult = await runHttpYacTest(smokeTest.path, smokeTest.config, testCase, outputPath, customEnv, HTTPYAC_VERSION);
       results.push(metadataResult);
