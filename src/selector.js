@@ -20,8 +20,13 @@ function globToRegex(pattern) {
     const next = value[index + 1];
 
     if (char === '*' && next === '*') {
-      result += '.*';
-      index++;
+      if (value[index + 2] === '/') {
+        result += '(?:.*/)?';
+        index += 2;
+      } else {
+        result += '.*';
+        index++;
+      }
     } else if (char === '*') {
       result += '[^/]*';
     } else {
