@@ -274,7 +274,7 @@ function buildSelection({ manifest, changedFiles, labels, journeyCases, scenario
 
   const addCase = (journeyName, testCase) => {
     selected.add(journeyName);
-    const key = `${journeyName}\u0000${testCase.path}\u0000${testCase.test || ''}\u0000${testCase.name || ''}`;
+    const key = `${journeyName}\u0000${testCase.path}\u0000${testCase.test || ''}`;
     if (!selectedCases.has(key)) {
       selectedCases.set(key, {
         journey: journeyName,

@@ -117,7 +117,7 @@ async function main() {
     }
     selectedCasesByJourney
       .get(selectedCase.journey)
-      .add(`${selectedCase.path || ''}\u0000${selectedCase.test || ''}\u0000${selectedCase.name || ''}`);
+      .add(`${selectedCase.path || ''}\u0000${selectedCase.test || ''}`);
   }
   journeysToRun = journeys.filter((journey) => selectedJourneySet.has(journey.name));
 
@@ -161,7 +161,7 @@ async function main() {
       const casesToRun = allCasesJourneySet.has(journey.name) || !selectedCaseKeys
         ? config.cases
         : config.cases.filter((testCase) => {
-            return selectedCaseKeys.has(`${testCase.path || ''}\u0000${testCase.test || ''}\u0000${testCase.name || ''}`);
+            return selectedCaseKeys.has(`${testCase.path || ''}\u0000${testCase.test || ''}`);
           });
 
       if (casesToRun.length === 0) {

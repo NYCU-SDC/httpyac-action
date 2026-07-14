@@ -726,7 +726,7 @@ function buildSelectionSection(selection) {
   }
 
   const selectedCaseKeys = new Set((selection.cases || []).map((testCase) => (
-    `${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}\u0000${testCase.name || ''}`
+    `${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}`
   )));
   const allCasesJourneySet = new Set(selection.all_cases_journeys || []);
   const availableCases = Array.isArray(selection.available_cases) ? selection.available_cases : [];
@@ -749,7 +749,7 @@ function buildSelectionSection(selection) {
     lines.push('');
     lines.push(buildJourneyCasesTable(availableCases, (testCase) => {
       return allCasesJourneySet.has(testCase.journey)
-        || selectedCaseKeys.has(`${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}\u0000${testCase.name || ''}`);
+        || selectedCaseKeys.has(`${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}`);
     }));
   }
 
