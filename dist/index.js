@@ -26002,19 +26002,12 @@ function formatDurationMs(value) {
 }
 
 function getTotalDuration(requests = []) {
-  const durations = requests
-    .map((request) => Number(request.duration))
-    .filter((duration) => Number.isFinite(duration));
+  const total = requests.reduce((sum, request) => {
+    const duration = Number(request.duration);
+    return Number.isFinite(duration) ? sum + duration : sum;
+  }, 0);
 
-  if (durations.length === 0) {
-    return 'N/A';
-  }
-
-  if (durations.length === 1) {
-    return formatDurationMs(durations[0]);
-  }
-
-  return formatDurationMs(Math.max(...durations) - Math.min(...durations));
+  return formatDurationMs(total);
 }
 
 function getPassPercentage(passed, failed, errored) {
@@ -26363,7 +26356,7 @@ function buildRequestTableRows(report, reportIndex) {
 
     return {
       requestName: displayName,
-      row: `|${requestNameCell}|${passedCell}|${failedCell}|${erroredCell}|${skippedCell}|`
+      row: `|${requestNameCell}|${passedCell}|${failedCell}|${erroredCell}|${skippedCell}|${formatDurationMs(request.duration)}|`
     };
   });
 }
@@ -26399,8 +26392,8 @@ function buildReportSection(report, reportIndex) {
     sectionLines.push('');
   }
 
-  sectionLines.push('|Test Name|Passed|Failed|Errored|Skipped|');
-  sectionLines.push('|:---|---:|---:|---:|---:|');
+  sectionLines.push('|Test Name|Passed|Failed|Errored|Skipped|Time|');
+  sectionLines.push('|:---|---:|---:|---:|---:|---:|');
   requestRows.slice().reverse().forEach((row) => sectionLines.push(row.row));
 
   const failedRequests = report.requests
@@ -26657,7 +26650,7 @@ function buildSelectionSection(selection) {
   }
 
   const selectedCaseKeys = new Set((selection.cases || []).map((testCase) => (
-    `${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}\u0000${testCase.name || ''}`
+    `${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}`
   )));
   const allCasesJourneySet = new Set(selection.all_cases_journeys || []);
   const availableCases = Array.isArray(selection.available_cases) ? selection.available_cases : [];
@@ -26680,7 +26673,7 @@ function buildSelectionSection(selection) {
     lines.push('');
     lines.push(buildJourneyCasesTable(availableCases, (testCase) => {
       return allCasesJourneySet.has(testCase.journey)
-        || selectedCaseKeys.has(`${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}\u0000${testCase.name || ''}`);
+        || selectedCaseKeys.has(`${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}`);
     }));
   }
 
@@ -26896,8 +26889,13 @@ function globToRegex(pattern) {
     const next = value[index + 1];
 
     if (char === '*' && next === '*') {
-      result += '.*';
-      index++;
+      if (value[index + 2] === '/') {
+        result += '(?:.*/)?';
+        index += 2;
+      } else {
+        result += '.*';
+        index++;
+      }
     } else if (char === '*') {
       result += '[^/]*';
     } else {
@@ -27150,7 +27148,7 @@ function buildSelection({ manifest, changedFiles, labels, journeyCases, scenario
 
   const addCase = (journeyName, testCase) => {
     selected.add(journeyName);
-    const key = `${journeyName}\u0000${testCase.path}\u0000${testCase.test || ''}\u0000${testCase.name || ''}`;
+    const key = `${journeyName}\u0000${testCase.path}\u0000${testCase.test || ''}`;
     if (!selectedCases.has(key)) {
       selectedCases.set(key, {
         journey: journeyName,
@@ -38071,7 +38069,7 @@ async function main() {
     }
     selectedCasesByJourney
       .get(selectedCase.journey)
-      .add(`${selectedCase.path || ''}\u0000${selectedCase.test || ''}\u0000${selectedCase.name || ''}`);
+      .add(`${selectedCase.path || ''}\u0000${selectedCase.test || ''}`);
   }
   journeysToRun = journeys.filter((journey) => selectedJourneySet.has(journey.name));
 
@@ -38096,12 +38094,12 @@ async function main() {
   }
   
   const results = [];
+  let smokeCaseIndex = 0;
 
   for (const smokeTest of smokeTests) {
-    let caseIndex = 0;
     for (const testCase of smokeTest.config.cases) {
-      caseIndex++;
-      const outputFileName = `smoke-${caseIndex}.json`;
+      smokeCaseIndex++;
+      const outputFileName = `smoke-${smokeCaseIndex}.json`;
       const outputPath = path.join(outputDir, outputFileName);
       const metadataResult = await runHttpYacTest(smokeTest.path, smokeTest.config, testCase, outputPath, customEnv, HTTPYAC_VERSION);
       results.push(metadataResult);
@@ -38115,7 +38113,7 @@ async function main() {
       const casesToRun = allCasesJourneySet.has(journey.name) || !selectedCaseKeys
         ? config.cases
         : config.cases.filter((testCase) => {
-            return selectedCaseKeys.has(`${testCase.path || ''}\u0000${testCase.test || ''}\u0000${testCase.name || ''}`);
+            return selectedCaseKeys.has(`${testCase.path || ''}\u0000${testCase.test || ''}`);
           });
 
       if (casesToRun.length === 0) {
