@@ -71,19 +71,12 @@ function formatDurationMs(value) {
 }
 
 function getTotalDuration(requests = []) {
-  const durations = requests
-    .map((request) => Number(request.duration))
-    .filter((duration) => Number.isFinite(duration));
+  const total = requests.reduce((sum, request) => {
+    const duration = Number(request.duration);
+    return Number.isFinite(duration) ? sum + duration : sum;
+  }, 0);
 
-  if (durations.length === 0) {
-    return 'N/A';
-  }
-
-  if (durations.length === 1) {
-    return formatDurationMs(durations[0]);
-  }
-
-  return formatDurationMs(Math.max(...durations) - Math.min(...durations));
+  return formatDurationMs(total);
 }
 
 function getPassPercentage(passed, failed, errored) {
@@ -432,7 +425,7 @@ function buildRequestTableRows(report, reportIndex) {
 
     return {
       requestName: displayName,
-      row: `|${requestNameCell}|${passedCell}|${failedCell}|${erroredCell}|${skippedCell}|`
+      row: `|${requestNameCell}|${passedCell}|${failedCell}|${erroredCell}|${skippedCell}|${formatDurationMs(request.duration)}|`
     };
   });
 }
@@ -468,8 +461,8 @@ function buildReportSection(report, reportIndex) {
     sectionLines.push('');
   }
 
-  sectionLines.push('|Test Name|Passed|Failed|Errored|Skipped|');
-  sectionLines.push('|:---|---:|---:|---:|---:|');
+  sectionLines.push('|Test Name|Passed|Failed|Errored|Skipped|Time|');
+  sectionLines.push('|:---|---:|---:|---:|---:|---:|');
   requestRows.slice().reverse().forEach((row) => sectionLines.push(row.row));
 
   const failedRequests = report.requests
