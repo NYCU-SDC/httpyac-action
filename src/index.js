@@ -3,10 +3,10 @@
 const core = require('@actions/core');
 const fs = require('fs').promises;
 const path = require('path');
-const { findJourneysYaml, parseJourneyYaml, runHttpYacTest } = require('./executor');
+const { findJourneysYaml, findSmokeHttpFiles, parseJourneyYaml, runHttpYacTest } = require('./executor');
 const { loadReports, buildMarkdownSummary, writeSummary } = require('./reporter');
 const { isTestFailed, isErrorResult } = require('./error-types');
-const { error } = require('console');
+const { selectJourneys } = require('./selector');
 
 const HTTPYAC_VERSION = '6.16.7';
 
@@ -49,13 +49,17 @@ function parseEnvInput(envInput) {
 async function main() {
   const scenariosPath = core.getInput('scenarios-path', { required: true });
   const outputDir = core.getInput('output-dir', { required: false }) || './httpyac-results';
+  const changedFilesPath = core.getInput('changed-files-path', { required: false });
+  const labelsInput = core.getInput('labels', { required: false });
+  const manifestPath = path.join(scenariosPath, 'manifest.yaml');
+  const smokePath = path.join(scenariosPath, 'smoke');
   const rawEnv = core.getInput('env', { required: true });
 
   const customEnv = parseEnvInput(rawEnv);
   
   console.log('httpYac Action - Phase 1: Test Execution');
   await fs.mkdir(outputDir, { recursive: true });
-  
+
   // Find all journey.yaml files
   console.log('\nFinding user journeys...');
   const [journeys, skippedJourneys] = await findJourneysYaml(scenariosPath);
@@ -66,18 +70,107 @@ async function main() {
 
   if (journeys.length === 0) {
     console.log('   No user journeys found');
-    return;
   } 
   console.log(`   Found ${journeys.length} user journey(s)`);
+
+  let selection = null;
+  let journeysToRun = journeys;
+  let smokeTests = [];
+
+  if (changedFilesPath) {
+    try {
+      await fs.access(manifestPath);
+    } catch (_err) {
+      throw new Error(`changed-files-path requires manifest.yaml at ${manifestPath}`);
+    }
+
+    selection = await selectJourneys({
+      manifestPath,
+      changedFilesPath,
+      labelsInput,
+      scenariosPath
+    });
+  } else {
+    selection = {
+      mode: 'all',
+      journeys: journeys.map((journey) => journey.name),
+      reasons: [{ type: 'mode', mode: 'all', selected_journeys: journeys.map((journey) => journey.name) }],
+      unmatched_files: []
+    };
+  }
+
+  const selectionPath = path.join(outputDir, 'selection.json');
+  await fs.writeFile(selectionPath, JSON.stringify(selection, null, 2), 'utf8');
+  console.log(`\nSelection generated: ${selectionPath}`);
+  console.log(`   Mode: ${selection.mode}`);
+  console.log(`   Selected journeys: ${selection.journeys.join(', ') || '(none)'}`);
+
+  const selectedJourneySet = new Set(selection.journeys || []);
+  const allCasesJourneySet = new Set(selection.all_cases_journeys || []);
+  const selectedCasesByJourney = new Map();
+  for (const selectedCase of selection.cases || []) {
+    if (!selectedCase || !selectedCase.journey) {
+      continue;
+    }
+    if (!selectedCasesByJourney.has(selectedCase.journey)) {
+      selectedCasesByJourney.set(selectedCase.journey, new Set());
+    }
+    selectedCasesByJourney
+      .get(selectedCase.journey)
+      .add(`${selectedCase.path || ''}\u0000${selectedCase.test || ''}`);
+  }
+  journeysToRun = journeys.filter((journey) => selectedJourneySet.has(journey.name));
+
+  if (selectedJourneySet.has('smoke')) {
+    smokeTests = await findSmokeHttpFiles(smokePath);
+    if (smokeTests.length === 0) {
+      throw new Error(`Selected smoke journey but no .http files were found in ${smokePath}`);
+    }
+  }
+
+  const knownRunnableJourneys = new Set([
+    ...journeys.map((journey) => journey.name),
+    ...(smokeTests.length > 0 ? ['smoke'] : [])
+  ]);
+  const missingJourneys = selection.journeys.filter((journey) => !knownRunnableJourneys.has(journey));
+  if (missingJourneys.length > 0) {
+    throw new Error(`Selected journey is not runnable from scenarios-path: ${missingJourneys.join(', ')}`);
+  }
+
+  if (journeysToRun.length === 0 && smokeTests.length === 0) {
+    throw new Error('Selection produced no runnable journeys');
+  }
   
   const results = [];
+  let smokeCaseIndex = 0;
+
+  for (const smokeTest of smokeTests) {
+    for (const testCase of smokeTest.config.cases) {
+      smokeCaseIndex++;
+      const outputFileName = `smoke-${smokeCaseIndex}.json`;
+      const outputPath = path.join(outputDir, outputFileName);
+      const metadataResult = await runHttpYacTest(smokeTest.path, smokeTest.config, testCase, outputPath, customEnv, HTTPYAC_VERSION);
+      results.push(metadataResult);
+    }
+  }
   
-  for (const journey of journeys) {
+  for (const journey of journeysToRun) {
     try {
       const config = await parseJourneyYaml(journey.yamlPath);
+      const selectedCaseKeys = selectedCasesByJourney.get(journey.name);
+      const casesToRun = allCasesJourneySet.has(journey.name) || !selectedCaseKeys
+        ? config.cases
+        : config.cases.filter((testCase) => {
+            return selectedCaseKeys.has(`${testCase.path || ''}\u0000${testCase.test || ''}`);
+          });
+
+      if (casesToRun.length === 0) {
+        console.log(`\nSkipping journey '${journey.name}' because no selected cases are runnable`);
+        continue;
+      }
       
       let caseIndex = 0;
-      for (const testCase of config.cases) {
+      for (const testCase of casesToRun) {
         caseIndex++;
         
         const outputFileName = `${journey.name}-${caseIndex}.json`;
@@ -104,6 +197,7 @@ async function main() {
   const errorCount = results.filter(isErrorResult).length;
   const metadataData = {
     timestamp: new Date().toISOString(),
+    selection,
     summary: {
       total: results.length,
       successful: results.filter(r => r.success).length,
@@ -131,7 +225,7 @@ async function main() {
     return;
   }
 
-  const markdown = buildMarkdownSummary(reports);
+  const markdown = buildMarkdownSummary(reports, selection);
   const summaryPath = await writeSummary(markdown, outputDir);
 
   console.log(`   Summary generated: ${summaryPath}`);

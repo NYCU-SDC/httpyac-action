@@ -495,25 +495,277 @@ function buildOverviewSection(reports, globalTotals) {
   lines.push(`![${badgeStyle.alt}](https://img.shields.io/badge/tests-${badgeText}-${badgeStyle.badge})`);
 
   const groups = {};
+  const groupOrder = [];
   reports.forEach((report, index) => {
     const title = report.journeyTitle || 'Other';
     if (!groups[title]) {
       groups[title] = [];
+      groupOrder.push(title);
     }
     groups[title].push({ report, index });
   });
 
-  for (const [title, groupReports] of Object.entries(groups)) {
-    lines.push('');
-    lines.push(`**${title}**`);
-    lines.push('|Test Case|Passed|Failed|Errored|Skipped|Pass %|Time|');
-    lines.push('|:---|---:|---:|---:|---:|---:|---:|');
+  lines.push('');
+  lines.push('<table>');
+  lines.push('<thead>');
+  lines.push('<tr><th>Journey</th><th>Test Case</th><th>Passed</th><th>Failed</th><th>Errored</th><th>Skipped</th><th>Pass %</th><th>Time</th></tr>');
+  lines.push('</thead>');
+  lines.push('<tbody>');
 
-    groupReports.forEach(({ report, index }) => {
-      lines.push(
-        `|[${report.displayName}](#user-content-r${index})|${report.passed}|${report.failed}|${report.errored}|${report.skipped}|${report.passPercent}|${report.duration}|`
-      );
+  for (const title of groupOrder) {
+    const groupReports = groups[title];
+    groupReports.forEach(({ report, index }, rowIndex) => {
+      lines.push('<tr>');
+      if (rowIndex === 0) {
+        lines.push(`<td rowspan="${groupReports.length}">${escapeHtml(title)}</td>`);
+      }
+      lines.push(`<td><a href="#user-content-r${index}">${escapeHtml(report.displayName)}</a></td>`);
+      lines.push(`<td align="right">${escapeHtml(report.passed)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.failed)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.errored)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.skipped)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.passPercent)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.duration)}</td>`);
+      lines.push('</tr>');
     });
+  }
+
+  lines.push('</tbody>');
+  lines.push('</table>');
+
+  return lines.join('\n');
+}
+
+function escapeTableCell(value) {
+  return String(value ?? '')
+    .replace(/\|/g, '\\|')
+    .replace(/\r?\n/g, ' ');
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatTriggerList(values = [], maxItems = 3) {
+  const uniqueValues = [...new Set(values.filter(Boolean))];
+  if (uniqueValues.length === 0) {
+    return '_None_';
+  }
+
+  const visibleValues = uniqueValues.slice(0, maxItems).map((value) => `\`${escapeTableCell(value)}\``);
+  const remaining = uniqueValues.length - visibleValues.length;
+  if (remaining > 0) {
+    visibleValues.push(`+${remaining} more`);
+  }
+
+  return visibleValues.join(', ');
+}
+
+function buildSelectedDomainTable(selection, availableCases = []) {
+  const domainMap = new Map();
+
+  const ensureDomain = (domainName) => {
+    const key = domainName || '_unknown_';
+    if (!domainMap.has(key)) {
+      domainMap.set(key, {
+        domain: key,
+        files: [],
+        effects: new Set(),
+        labels: []
+      });
+    }
+    return domainMap.get(key);
+  };
+
+  for (const reason of selection.reasons || []) {
+    if (reason.type === 'changed_file_domain' && reason.matched_domain) {
+      const domain = ensureDomain(reason.matched_domain);
+      if (reason.file) {
+        domain.files.push(reason.file);
+      }
+    }
+
+    if (reason.type === 'domain_selection' && reason.domain) {
+      const domain = ensureDomain(reason.domain);
+      domain.files.push(...(reason.files || []));
+      domain.effects.add('selected cases');
+    }
+
+    if (reason.type === 'label') {
+      for (const domainName of reason.selected_domains || []) {
+        const domain = ensureDomain(domainName);
+        domain.labels.push(reason.label);
+        domain.effects.add('label');
+      }
+    }
+  }
+
+  const domains = [...domainMap.values()]
+    .filter((domain) => domain.domain && domain.domain !== '_all_' && domain.domain !== '_unmatched_')
+    .sort((a, b) => a.domain.localeCompare(b.domain));
+
+  if (domains.length === 0) {
+    return '';
+  }
+
+  const maxRows = 10;
+  const visibleDomains = domains.slice(0, maxRows);
+  const lines = [];
+  lines.push('**Selected Domains**');
+  lines.push('|Domain|Why selected|');
+  lines.push('|:---|:---|');
+
+  for (const domain of visibleDomains) {
+    const reasons = [];
+    const fileCount = new Set(domain.files).size;
+    if (fileCount > 0) {
+      reasons.push(`${formatTriggerList(domain.files, 2)} (${fileCount})`);
+    }
+    if (domain.labels.length > 0) {
+      reasons.push(`labels ${formatTriggerList(domain.labels, 2)}`);
+    }
+    if (domain.effects.size > 0) {
+      reasons.push([...domain.effects].map((effect) => `\`${escapeTableCell(effect)}\``).join(', '));
+    }
+
+    lines.push(`|\`${escapeTableCell(domain.domain)}\`|${reasons.join('<br>') || '_selection rule_'}|`);
+  }
+
+  if (domains.length > visibleDomains.length) {
+    lines.push(`|_more_|+${domains.length - visibleDomains.length} more domains in \`selection.json\`|`);
+  }
+
+  return lines.join('\n');
+}
+
+function buildJourneyCasesTable(availableCases, isCaseSelected) {
+  if (availableCases.length === 0) {
+    return '';
+  }
+
+  const groups = [];
+  const groupByJourney = new Map();
+
+  for (const testCase of availableCases) {
+    const journeyLabel = testCase.journey_title || testCase.journey || '_Unnamed journey_';
+    if (!groupByJourney.has(journeyLabel)) {
+      const group = { journeyLabel, cases: [] };
+      groupByJourney.set(journeyLabel, group);
+      groups.push(group);
+    }
+    groupByJourney.get(journeyLabel).cases.push(testCase);
+  }
+
+  const lines = [];
+  lines.push('**Journey Cases**');
+  lines.push('<table>');
+  lines.push('<thead>');
+  lines.push('<tr><th>Journey</th><th>Case</th><th>Selected</th><th>Domains</th></tr>');
+  lines.push('</thead>');
+  lines.push('<tbody>');
+
+  for (const group of groups) {
+    group.cases.forEach((testCase, index) => {
+      const caseLabel = testCase.name || testCase.test || testCase.path || '_Unnamed case_';
+      const domains = (testCase.domains || [])
+        .map((domain) => `<code>${escapeHtml(domain)}</code>`)
+        .join(', ') || '_None_';
+
+      lines.push('<tr>');
+      if (index === 0) {
+        lines.push(`<td rowspan="${group.cases.length}">${escapeHtml(group.journeyLabel)}</td>`);
+      }
+      lines.push(`<td>${escapeHtml(caseLabel)}</td>`);
+      lines.push(`<td align="center">${isCaseSelected(testCase) ? '✓' : ''}</td>`);
+      lines.push(`<td>${domains}</td>`);
+      lines.push('</tr>');
+    });
+  }
+
+  lines.push('</tbody>');
+  lines.push('</table>');
+
+  return lines.join('\n');
+}
+
+function buildUnknownChangesList(unmatchedFiles = []) {
+  const uniqueFiles = [...new Set(unmatchedFiles.filter(Boolean))];
+  if (uniqueFiles.length === 0) {
+    return '';
+  }
+
+  const maxRows = 20;
+  const lines = [];
+  lines.push('**Unknown Changes**');
+  lines.push('');
+  for (const file of uniqueFiles.slice(0, maxRows)) {
+    lines.push(`- \`${escapeTableCell(file)}\``);
+  }
+  if (uniqueFiles.length > maxRows) {
+    lines.push(`- _+${uniqueFiles.length - maxRows} more in \`selection.json\`_`);
+  }
+
+  return lines.join('\n');
+}
+
+function buildSelectionSection(selection) {
+  if (!selection) {
+    return '';
+  }
+
+  const selectedCaseKeys = new Set((selection.cases || []).map((testCase) => (
+    `${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}`
+  )));
+  const allCasesJourneySet = new Set(selection.all_cases_journeys || []);
+  const availableCases = Array.isArray(selection.available_cases) ? selection.available_cases : [];
+
+  const lines = [];
+  lines.push('## QA Selection');
+
+  if (Array.isArray(selection.unmatched_files) && selection.unmatched_files.length > 0) {
+    lines.push('');
+    lines.push(buildUnknownChangesList(selection.unmatched_files));
+  }
+
+  const selectedDomainTable = buildSelectedDomainTable(selection, availableCases);
+  if (selectedDomainTable) {
+    lines.push('');
+    lines.push(selectedDomainTable);
+  }
+
+  if (availableCases.length > 0) {
+    lines.push('');
+    lines.push(buildJourneyCasesTable(availableCases, (testCase) => {
+      return allCasesJourneySet.has(testCase.journey)
+        || selectedCaseKeys.has(`${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}`);
+    }));
+  }
+
+  const labelReasons = (selection.reasons || []).filter((reason) => reason.type === 'label');
+  if (labelReasons.length > 0) {
+    lines.push('');
+    lines.push('**Matched Labels**');
+    for (const reason of labelReasons) {
+      const selectedParts = [];
+      if (reason.mode) {
+        selectedParts.push(`mode \`${reason.mode}\``);
+      }
+      if (Array.isArray(reason.selected_domains) && reason.selected_domains.length > 0) {
+        selectedParts.push(`domains ${reason.selected_domains.map((domain) => `\`${domain}\``).join(', ')}`);
+      }
+      if (Array.isArray(reason.selected_journeys) && reason.selected_journeys.length > 0) {
+        selectedParts.push(`journeys ${reason.selected_journeys.map((journey) => `\`${journey}\``).join(', ')}`);
+      }
+      if (Array.isArray(reason.selected_cases) && reason.selected_cases.length > 0) {
+        selectedParts.push(`${reason.selected_cases.length} cases`);
+      }
+      lines.push(`- \`${reason.label}\` selected ${selectedParts.join('; ') || '_None_'}`);
+    }
   }
 
   return lines.join('\n');
@@ -614,7 +866,7 @@ async function loadReports(outputDir) {
   return reports;
 }
 
-function buildMarkdownSummary(reports) {
+function buildMarkdownSummary(reports, selection = null) {
   const totals = reports.reduce(
     (acc, report) => {
       acc.passed += report.passed;
@@ -629,6 +881,11 @@ function buildMarkdownSummary(reports) {
   const lines = [];
   lines.push('# httpYac Test Summary');
   lines.push('');
+  const selectionSection = buildSelectionSection(selection);
+  if (selectionSection) {
+    lines.push(selectionSection);
+    lines.push('');
+  }
   lines.push(buildOverviewSection(reports, totals));
   lines.push('');
 
@@ -669,5 +926,6 @@ async function writeSummary(markdown, outputDir) {
 module.exports = {
   loadReports,
   buildMarkdownSummary,
+  buildSelectionSection,
   writeSummary
 };

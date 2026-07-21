@@ -8,12 +8,20 @@ branding:
 
 inputs:
   scenarios-path:
-    description: 'Path to the scenarios directory containing user journeys'
+    description: 'Path to the scenarios directory containing manifest.yaml, smoke, and journey folders'
     required: true
   output-dir:
     description: 'Directory to save JSON output files'
     required: false
     default: './httpyac-results'
+  changed-files-path:
+    description: 'Path to standardized changed-files JSON'
+    required: false
+    default: ''
+  labels:
+    description: 'PR labels as JSON, comma-separated, or newline-separated values'
+    required: false
+    default: ''
   env:
     description: 'Environment variables to pass to httpYac tests'
     required: true

@@ -54,35 +54,72 @@ function classifyHttpYacResult(result) {
 
 async function findJourneysYaml(baseDir) {
   const journeys = [];
-  const skippedJourneys = [];
-  
-  try {
-    const entries = await fs.readdir(baseDir, { withFileTypes: true });
-    
+
+  async function walk(currentDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    const hasJourneyYaml = entries.some((entry) => entry.isFile() && entry.name === 'journey.yaml');
+
+    if (hasJourneyYaml) {
+      journeys.push({
+        name: path.basename(currentDir),
+        path: currentDir,
+        yamlPath: path.join(currentDir, 'journey.yaml')
+      });
+      return;
+    }
+
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        const journeyPath = path.join(baseDir, entry.name);
-        const yamlPath = path.join(journeyPath, 'journey.yaml');
-        
-        try {
-          await fs.access(yamlPath);
-          journeys.push({
-            name: entry.name,
-            path: journeyPath,
-            yamlPath: yamlPath
-          });
-        } catch (err) {
-          // journey.yaml doesn't exist in this directory, skip it
-          skippedJourneys.push(entry.name);
-        }
+        await walk(path.join(currentDir, entry.name));
       }
     }
+  }
+
+  try {
+    await walk(baseDir);
   } catch (err) {
     console.error(`Error reading scenarios directory: ${err.message}`);
     throw err;
   }
-  
-  return [journeys, skippedJourneys];
+
+  return [journeys, []];
+}
+
+async function findSmokeHttpFiles(smokeDir) {
+  const smokeTests = [];
+
+  try {
+    const entries = await fs.readdir(smokeDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.http')) {
+        const fileContent = await fs.readFile(path.join(smokeDir, entry.name), 'utf8');
+        const nameMatch = fileContent.match(/^#\s*@name\s+(.+)$/m);
+        const titleMatch = fileContent.match(/^#\s*@title\s+(.+)$/m);
+        const testName = nameMatch
+          ? nameMatch[1].trim()
+          : titleMatch ? titleMatch[1].trim() : path.basename(entry.name, '.http');
+
+        smokeTests.push({
+          name: path.basename(entry.name, '.http'),
+          path: smokeDir,
+          config: {
+            name: 'Smoke',
+            description: 'Minimal smoke checks',
+            cases: [{
+              name: testName,
+              description: 'Smoke check',
+              path: entry.name,
+              test: testName
+            }]
+          }
+        });
+      }
+    }
+  } catch (err) {
+    throw new Error(`Failed to read smoke path ${smokeDir}: ${err.message}`);
+  }
+
+  return smokeTests;
 }
 
 async function parseJourneyYaml(filepath) {
@@ -118,7 +155,10 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
     for (const [key, value] of Object.entries(env || {})) {
       args.push('--var', `${key}=${value}`);
     }
-    args.push('--name', testCase.test, '--json', '--output', 'exchange', '--output-failed', 'exchange');
+    if (testCase.test) {
+      args.push('--name', testCase.test);
+    }
+    args.push('--json', '--output', 'exchange', '--output-failed', 'exchange');
 
 
     const outputFd = await fs.open(absoluteOutputPath, 'w');
@@ -178,6 +218,7 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
 
 module.exports = {
   findJourneysYaml,
+  findSmokeHttpFiles,
   parseJourneyYaml,
   runHttpYacTest
 };

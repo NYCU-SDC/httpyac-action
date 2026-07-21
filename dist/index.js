@@ -25754,35 +25754,72 @@ function classifyHttpYacResult(result) {
 
 async function findJourneysYaml(baseDir) {
   const journeys = [];
-  const skippedJourneys = [];
-  
-  try {
-    const entries = await fs.readdir(baseDir, { withFileTypes: true });
-    
+
+  async function walk(currentDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+    const hasJourneyYaml = entries.some((entry) => entry.isFile() && entry.name === 'journey.yaml');
+
+    if (hasJourneyYaml) {
+      journeys.push({
+        name: path.basename(currentDir),
+        path: currentDir,
+        yamlPath: path.join(currentDir, 'journey.yaml')
+      });
+      return;
+    }
+
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        const journeyPath = path.join(baseDir, entry.name);
-        const yamlPath = path.join(journeyPath, 'journey.yaml');
-        
-        try {
-          await fs.access(yamlPath);
-          journeys.push({
-            name: entry.name,
-            path: journeyPath,
-            yamlPath: yamlPath
-          });
-        } catch (err) {
-          // journey.yaml doesn't exist in this directory, skip it
-          skippedJourneys.push(entry.name);
-        }
+        await walk(path.join(currentDir, entry.name));
       }
     }
+  }
+
+  try {
+    await walk(baseDir);
   } catch (err) {
     console.error(`Error reading scenarios directory: ${err.message}`);
     throw err;
   }
-  
-  return [journeys, skippedJourneys];
+
+  return [journeys, []];
+}
+
+async function findSmokeHttpFiles(smokeDir) {
+  const smokeTests = [];
+
+  try {
+    const entries = await fs.readdir(smokeDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.http')) {
+        const fileContent = await fs.readFile(path.join(smokeDir, entry.name), 'utf8');
+        const nameMatch = fileContent.match(/^#\s*@name\s+(.+)$/m);
+        const titleMatch = fileContent.match(/^#\s*@title\s+(.+)$/m);
+        const testName = nameMatch
+          ? nameMatch[1].trim()
+          : titleMatch ? titleMatch[1].trim() : path.basename(entry.name, '.http');
+
+        smokeTests.push({
+          name: path.basename(entry.name, '.http'),
+          path: smokeDir,
+          config: {
+            name: 'Smoke',
+            description: 'Minimal smoke checks',
+            cases: [{
+              name: testName,
+              description: 'Smoke check',
+              path: entry.name,
+              test: testName
+            }]
+          }
+        });
+      }
+    }
+  } catch (err) {
+    throw new Error(`Failed to read smoke path ${smokeDir}: ${err.message}`);
+  }
+
+  return smokeTests;
 }
 
 async function parseJourneyYaml(filepath) {
@@ -25818,7 +25855,10 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
     for (const [key, value] of Object.entries(env || {})) {
       args.push('--var', `${key}=${value}`);
     }
-    args.push('--name', testCase.test, '--json', '--output', 'exchange', '--output-failed', 'exchange');
+    if (testCase.test) {
+      args.push('--name', testCase.test);
+    }
+    args.push('--json', '--output', 'exchange', '--output-failed', 'exchange');
 
 
     const outputFd = await fs.open(absoluteOutputPath, 'w');
@@ -25878,9 +25918,11 @@ async function runHttpYacTest(journeyPath, config, testCase, outputPath, env, ht
 
 module.exports = {
   findJourneysYaml,
+  findSmokeHttpFiles,
   parseJourneyYaml,
   runHttpYacTest
 };
+
 
 /***/ }),
 
@@ -26384,25 +26426,277 @@ function buildOverviewSection(reports, globalTotals) {
   lines.push(`![${badgeStyle.alt}](https://img.shields.io/badge/tests-${badgeText}-${badgeStyle.badge})`);
 
   const groups = {};
+  const groupOrder = [];
   reports.forEach((report, index) => {
     const title = report.journeyTitle || 'Other';
     if (!groups[title]) {
       groups[title] = [];
+      groupOrder.push(title);
     }
     groups[title].push({ report, index });
   });
 
-  for (const [title, groupReports] of Object.entries(groups)) {
-    lines.push('');
-    lines.push(`**${title}**`);
-    lines.push('|Test Case|Passed|Failed|Errored|Skipped|Pass %|Time|');
-    lines.push('|:---|---:|---:|---:|---:|---:|---:|');
+  lines.push('');
+  lines.push('<table>');
+  lines.push('<thead>');
+  lines.push('<tr><th>Journey</th><th>Test Case</th><th>Passed</th><th>Failed</th><th>Errored</th><th>Skipped</th><th>Pass %</th><th>Time</th></tr>');
+  lines.push('</thead>');
+  lines.push('<tbody>');
 
-    groupReports.forEach(({ report, index }) => {
-      lines.push(
-        `|[${report.displayName}](#user-content-r${index})|${report.passed}|${report.failed}|${report.errored}|${report.skipped}|${report.passPercent}|${report.duration}|`
-      );
+  for (const title of groupOrder) {
+    const groupReports = groups[title];
+    groupReports.forEach(({ report, index }, rowIndex) => {
+      lines.push('<tr>');
+      if (rowIndex === 0) {
+        lines.push(`<td rowspan="${groupReports.length}">${escapeHtml(title)}</td>`);
+      }
+      lines.push(`<td><a href="#user-content-r${index}">${escapeHtml(report.displayName)}</a></td>`);
+      lines.push(`<td align="right">${escapeHtml(report.passed)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.failed)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.errored)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.skipped)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.passPercent)}</td>`);
+      lines.push(`<td align="right">${escapeHtml(report.duration)}</td>`);
+      lines.push('</tr>');
     });
+  }
+
+  lines.push('</tbody>');
+  lines.push('</table>');
+
+  return lines.join('\n');
+}
+
+function escapeTableCell(value) {
+  return String(value ?? '')
+    .replace(/\|/g, '\\|')
+    .replace(/\r?\n/g, ' ');
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatTriggerList(values = [], maxItems = 3) {
+  const uniqueValues = [...new Set(values.filter(Boolean))];
+  if (uniqueValues.length === 0) {
+    return '_None_';
+  }
+
+  const visibleValues = uniqueValues.slice(0, maxItems).map((value) => `\`${escapeTableCell(value)}\``);
+  const remaining = uniqueValues.length - visibleValues.length;
+  if (remaining > 0) {
+    visibleValues.push(`+${remaining} more`);
+  }
+
+  return visibleValues.join(', ');
+}
+
+function buildSelectedDomainTable(selection, availableCases = []) {
+  const domainMap = new Map();
+
+  const ensureDomain = (domainName) => {
+    const key = domainName || '_unknown_';
+    if (!domainMap.has(key)) {
+      domainMap.set(key, {
+        domain: key,
+        files: [],
+        effects: new Set(),
+        labels: []
+      });
+    }
+    return domainMap.get(key);
+  };
+
+  for (const reason of selection.reasons || []) {
+    if (reason.type === 'changed_file_domain' && reason.matched_domain) {
+      const domain = ensureDomain(reason.matched_domain);
+      if (reason.file) {
+        domain.files.push(reason.file);
+      }
+    }
+
+    if (reason.type === 'domain_selection' && reason.domain) {
+      const domain = ensureDomain(reason.domain);
+      domain.files.push(...(reason.files || []));
+      domain.effects.add('selected cases');
+    }
+
+    if (reason.type === 'label') {
+      for (const domainName of reason.selected_domains || []) {
+        const domain = ensureDomain(domainName);
+        domain.labels.push(reason.label);
+        domain.effects.add('label');
+      }
+    }
+  }
+
+  const domains = [...domainMap.values()]
+    .filter((domain) => domain.domain && domain.domain !== '_all_' && domain.domain !== '_unmatched_')
+    .sort((a, b) => a.domain.localeCompare(b.domain));
+
+  if (domains.length === 0) {
+    return '';
+  }
+
+  const maxRows = 10;
+  const visibleDomains = domains.slice(0, maxRows);
+  const lines = [];
+  lines.push('**Selected Domains**');
+  lines.push('|Domain|Why selected|');
+  lines.push('|:---|:---|');
+
+  for (const domain of visibleDomains) {
+    const reasons = [];
+    const fileCount = new Set(domain.files).size;
+    if (fileCount > 0) {
+      reasons.push(`${formatTriggerList(domain.files, 2)} (${fileCount})`);
+    }
+    if (domain.labels.length > 0) {
+      reasons.push(`labels ${formatTriggerList(domain.labels, 2)}`);
+    }
+    if (domain.effects.size > 0) {
+      reasons.push([...domain.effects].map((effect) => `\`${escapeTableCell(effect)}\``).join(', '));
+    }
+
+    lines.push(`|\`${escapeTableCell(domain.domain)}\`|${reasons.join('<br>') || '_selection rule_'}|`);
+  }
+
+  if (domains.length > visibleDomains.length) {
+    lines.push(`|_more_|+${domains.length - visibleDomains.length} more domains in \`selection.json\`|`);
+  }
+
+  return lines.join('\n');
+}
+
+function buildJourneyCasesTable(availableCases, isCaseSelected) {
+  if (availableCases.length === 0) {
+    return '';
+  }
+
+  const groups = [];
+  const groupByJourney = new Map();
+
+  for (const testCase of availableCases) {
+    const journeyLabel = testCase.journey_title || testCase.journey || '_Unnamed journey_';
+    if (!groupByJourney.has(journeyLabel)) {
+      const group = { journeyLabel, cases: [] };
+      groupByJourney.set(journeyLabel, group);
+      groups.push(group);
+    }
+    groupByJourney.get(journeyLabel).cases.push(testCase);
+  }
+
+  const lines = [];
+  lines.push('**Journey Cases**');
+  lines.push('<table>');
+  lines.push('<thead>');
+  lines.push('<tr><th>Journey</th><th>Case</th><th>Selected</th><th>Domains</th></tr>');
+  lines.push('</thead>');
+  lines.push('<tbody>');
+
+  for (const group of groups) {
+    group.cases.forEach((testCase, index) => {
+      const caseLabel = testCase.name || testCase.test || testCase.path || '_Unnamed case_';
+      const domains = (testCase.domains || [])
+        .map((domain) => `<code>${escapeHtml(domain)}</code>`)
+        .join(', ') || '_None_';
+
+      lines.push('<tr>');
+      if (index === 0) {
+        lines.push(`<td rowspan="${group.cases.length}">${escapeHtml(group.journeyLabel)}</td>`);
+      }
+      lines.push(`<td>${escapeHtml(caseLabel)}</td>`);
+      lines.push(`<td align="center">${isCaseSelected(testCase) ? '✓' : ''}</td>`);
+      lines.push(`<td>${domains}</td>`);
+      lines.push('</tr>');
+    });
+  }
+
+  lines.push('</tbody>');
+  lines.push('</table>');
+
+  return lines.join('\n');
+}
+
+function buildUnknownChangesList(unmatchedFiles = []) {
+  const uniqueFiles = [...new Set(unmatchedFiles.filter(Boolean))];
+  if (uniqueFiles.length === 0) {
+    return '';
+  }
+
+  const maxRows = 20;
+  const lines = [];
+  lines.push('**Unknown Changes**');
+  lines.push('');
+  for (const file of uniqueFiles.slice(0, maxRows)) {
+    lines.push(`- \`${escapeTableCell(file)}\``);
+  }
+  if (uniqueFiles.length > maxRows) {
+    lines.push(`- _+${uniqueFiles.length - maxRows} more in \`selection.json\`_`);
+  }
+
+  return lines.join('\n');
+}
+
+function buildSelectionSection(selection) {
+  if (!selection) {
+    return '';
+  }
+
+  const selectedCaseKeys = new Set((selection.cases || []).map((testCase) => (
+    `${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}`
+  )));
+  const allCasesJourneySet = new Set(selection.all_cases_journeys || []);
+  const availableCases = Array.isArray(selection.available_cases) ? selection.available_cases : [];
+
+  const lines = [];
+  lines.push('## QA Selection');
+
+  if (Array.isArray(selection.unmatched_files) && selection.unmatched_files.length > 0) {
+    lines.push('');
+    lines.push(buildUnknownChangesList(selection.unmatched_files));
+  }
+
+  const selectedDomainTable = buildSelectedDomainTable(selection, availableCases);
+  if (selectedDomainTable) {
+    lines.push('');
+    lines.push(selectedDomainTable);
+  }
+
+  if (availableCases.length > 0) {
+    lines.push('');
+    lines.push(buildJourneyCasesTable(availableCases, (testCase) => {
+      return allCasesJourneySet.has(testCase.journey)
+        || selectedCaseKeys.has(`${testCase.journey || ''}\u0000${testCase.path || ''}\u0000${testCase.test || ''}`);
+    }));
+  }
+
+  const labelReasons = (selection.reasons || []).filter((reason) => reason.type === 'label');
+  if (labelReasons.length > 0) {
+    lines.push('');
+    lines.push('**Matched Labels**');
+    for (const reason of labelReasons) {
+      const selectedParts = [];
+      if (reason.mode) {
+        selectedParts.push(`mode \`${reason.mode}\``);
+      }
+      if (Array.isArray(reason.selected_domains) && reason.selected_domains.length > 0) {
+        selectedParts.push(`domains ${reason.selected_domains.map((domain) => `\`${domain}\``).join(', ')}`);
+      }
+      if (Array.isArray(reason.selected_journeys) && reason.selected_journeys.length > 0) {
+        selectedParts.push(`journeys ${reason.selected_journeys.map((journey) => `\`${journey}\``).join(', ')}`);
+      }
+      if (Array.isArray(reason.selected_cases) && reason.selected_cases.length > 0) {
+        selectedParts.push(`${reason.selected_cases.length} cases`);
+      }
+      lines.push(`- \`${reason.label}\` selected ${selectedParts.join('; ') || '_None_'}`);
+    }
   }
 
   return lines.join('\n');
@@ -26503,7 +26797,7 @@ async function loadReports(outputDir) {
   return reports;
 }
 
-function buildMarkdownSummary(reports) {
+function buildMarkdownSummary(reports, selection = null) {
   const totals = reports.reduce(
     (acc, report) => {
       acc.passed += report.passed;
@@ -26518,6 +26812,11 @@ function buildMarkdownSummary(reports) {
   const lines = [];
   lines.push('# httpYac Test Summary');
   lines.push('');
+  const selectionSection = buildSelectionSection(selection);
+  if (selectionSection) {
+    lines.push(selectionSection);
+    lines.push('');
+  }
   lines.push(buildOverviewSection(reports, totals));
   lines.push('');
 
@@ -26558,7 +26857,580 @@ async function writeSummary(markdown, outputDir) {
 module.exports = {
   loadReports,
   buildMarkdownSummary,
+  buildSelectionSection,
   writeSummary
+};
+
+
+/***/ }),
+
+/***/ 7020:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const fs = (__nccwpck_require__(9896).promises);
+const path = __nccwpck_require__(6928);
+const yaml = __nccwpck_require__(8815);
+const { findJourneysYaml } = __nccwpck_require__(1712);
+
+function unique(values) {
+  return [...new Set(values)];
+}
+
+function escapeRegex(value) {
+  return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+}
+
+function globToRegex(pattern) {
+  let result = '';
+  const value = String(pattern);
+
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index];
+    const next = value[index + 1];
+
+    if (char === '*' && next === '*') {
+      if (value[index + 2] === '/') {
+        result += '(?:.*/)?';
+        index += 2;
+      } else {
+        result += '.*';
+        index++;
+      }
+    } else if (char === '*') {
+      result += '[^/]*';
+    } else {
+      result += escapeRegex(char);
+    }
+  }
+
+  return new RegExp(`^${result}$`);
+}
+
+function matchesPath(filePath, pattern) {
+  return globToRegex(pattern).test(filePath);
+}
+
+function normalizePath(value) {
+  return String(value || '').replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function isPathInside(childPath, parentPath) {
+  const relativePath = normalizePath(path.relative(parentPath, childPath));
+  return relativePath === '' || (!relativePath.startsWith('../') && relativePath !== '..' && !path.isAbsolute(relativePath));
+}
+
+function getAbsoluteChangedPath(filePath) {
+  return path.isAbsolute(filePath) ? path.normalize(filePath) : path.resolve(filePath);
+}
+
+function getPathCandidates(file) {
+  return [
+    { field: 'path', value: file.path },
+    { field: 'previousPath', value: file.previousPath }
+  ].filter((candidate) => candidate.value);
+}
+
+function getIgnoreMatches(file, ignorePaths = []) {
+  const matches = [];
+  for (const candidate of getPathCandidates(file)) {
+    const matchedPatterns = ignorePaths.filter((pattern) => matchesPath(candidate.value, pattern));
+    if (matchedPatterns.length > 0) {
+      matches.push({
+        field: candidate.field,
+        path: candidate.value,
+        matched_ignore_paths: matchedPatterns
+      });
+    }
+  }
+  return matches;
+}
+
+function shouldIgnoreFile(file, ignorePaths = []) {
+  const candidates = getPathCandidates(file);
+  if (candidates.length === 0 || ignorePaths.length === 0) {
+    return { ignored: false, matches: [] };
+  }
+
+  const matches = getIgnoreMatches(file, ignorePaths);
+  const matchedFields = new Set(matches.map((match) => match.field));
+
+  return {
+    ignored: candidates.every((candidate) => matchedFields.has(candidate.field)),
+    matches
+  };
+}
+
+async function loadManifest(manifestPath) {
+  const content = await fs.readFile(manifestPath, 'utf8');
+  const manifest = yaml.parse(content);
+
+  if (!manifest || typeof manifest !== 'object') {
+    throw new Error('Manifest must be a YAML object');
+  }
+
+  return manifest;
+}
+
+async function loadChangedFiles(changedFilesPath) {
+  const content = await fs.readFile(changedFilesPath, 'utf8');
+  const parsed = JSON.parse(content);
+  const files = Array.isArray(parsed) ? parsed : parsed.files;
+
+  if (!Array.isArray(files)) {
+    throw new Error('Changed files JSON must be an array or an object with a files array');
+  }
+
+  return files.map((file) => {
+    if (typeof file === 'string') {
+      return { path: file, status: 'modified' };
+    }
+
+    if (!file || typeof file.path !== 'string' || !file.path.trim()) {
+      throw new Error('Each changed file must include a non-empty path');
+    }
+
+    return {
+      path: file.path,
+      previousPath: file.previousPath || file.previous_path || '',
+      status: file.status || 'modified'
+    };
+  });
+}
+
+function parseLabels(labelInput) {
+  if (!labelInput) {
+    return [];
+  }
+
+  const trimmed = labelInput.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+    const parsed = JSON.parse(trimmed);
+    const labels = Array.isArray(parsed) ? parsed : parsed.labels;
+    if (!Array.isArray(labels)) {
+      throw new Error('Labels JSON must be an array or an object with a labels array');
+    }
+    return labels.map(String);
+  }
+
+  return trimmed
+    .split(/[\n,]/)
+    .map((label) => label.trim())
+    .filter(Boolean);
+}
+
+async function getKnownJourneys(scenariosPath) {
+  const knownJourneys = new Set(['smoke']);
+  const [journeys] = await findJourneysYaml(scenariosPath);
+
+  for (const journey of journeys) {
+    knownJourneys.add(journey.name);
+  }
+
+  return knownJourneys;
+}
+
+async function loadJourneyCases(scenariosPath) {
+  const journeys = new Map();
+  const [journeyFiles] = await findJourneysYaml(scenariosPath);
+
+  for (const journeyFile of journeyFiles) {
+    try {
+      const content = await fs.readFile(journeyFile.yamlPath, 'utf8');
+      const config = yaml.parse(content);
+      const cases = Array.isArray(config && config.cases) ? config.cases : [];
+      journeys.set(journeyFile.name, {
+        name: journeyFile.name,
+        title: config && config.name ? config.name : journeyFile.name,
+        path: journeyFile.path,
+        yamlPath: journeyFile.yamlPath,
+        cases: cases.map((testCase, index) => ({
+          name: testCase.name || `Case ${index + 1}`,
+          path: testCase.path || '',
+          test: testCase.test || '',
+          domains: Array.isArray(testCase.domains) ? testCase.domains.map(String) : []
+        }))
+      });
+    } catch (_err) {
+      // Directories with unreadable or invalid journey.yaml are ignored by the selector.
+    }
+  }
+
+  return journeys;
+}
+
+async function validateManifest(manifest, scenariosPath) {
+  if (!manifest.defaults || typeof manifest.defaults !== 'object') {
+    throw new Error('Manifest must define defaults');
+  }
+
+  if (!Array.isArray(manifest.defaults.always_run)) {
+    throw new Error('Manifest defaults.always_run must be an array');
+  }
+
+  let knownJourneys;
+  try {
+    knownJourneys = await getKnownJourneys(scenariosPath);
+  } catch (err) {
+    throw new Error(`Failed to read scenarios path for manifest validation: ${err.message}`);
+  }
+
+  const domainNames = new Set(Object.keys(manifest.domains || {}));
+
+  const validateJourneys = (journeys, context) => {
+    if (!Array.isArray(journeys)) {
+      return;
+    }
+    for (const journey of journeys) {
+      if (!knownJourneys.has(journey)) {
+        throw new Error(`${context} references unknown journey: ${journey}`);
+      }
+    }
+  };
+
+  const validateDomains = (domains, context) => {
+    if (!Array.isArray(domains)) {
+      return;
+    }
+    for (const domain of domains) {
+      if (!domainNames.has(domain)) {
+        throw new Error(`${context} references unknown domain: ${domain}`);
+      }
+    }
+  };
+
+  for (const journey of manifest.defaults.always_run) {
+    if (!knownJourneys.has(journey)) {
+      throw new Error(`defaults.always_run references unknown journey: ${journey}`);
+    }
+  }
+
+  for (const [domainName, domain] of Object.entries(manifest.domains || {})) {
+    if (!domain || typeof domain !== 'object') {
+      throw new Error(`domains.${domainName} must be an object`);
+    }
+    if (!Array.isArray(domain.paths) || domain.paths.length === 0) {
+      throw new Error(`domains.${domainName}.paths must define at least one path`);
+    }
+  }
+
+  for (const [label, entry] of Object.entries(manifest.labels || {})) {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`labels.${label} must be an object`);
+    }
+    if (entry.mode && entry.mode !== 'full') {
+      throw new Error(`labels.${label}.mode must be full when defined`);
+    }
+    validateJourneys(entry.journeys, `labels.${label}`);
+    validateDomains(entry.domains, `labels.${label}`);
+  }
+}
+
+function buildSelection({ manifest, changedFiles, labels, journeyCases, scenariosPath }) {
+  const selected = new Set();
+  const allCasesJourneys = new Set();
+  const selectedCases = new Map();
+  const reasons = [];
+  const unmatchedFiles = [];
+  const ignoredFiles = [];
+
+  const addJourneys = (journeys, allCases = false) => {
+    for (const journey of journeys) {
+      selected.add(journey);
+      if (allCases && journey !== 'smoke') {
+        allCasesJourneys.add(journey);
+      }
+    }
+  };
+
+  const addCase = (journeyName, testCase) => {
+    selected.add(journeyName);
+    const key = `${journeyName}\u0000${testCase.path}\u0000${testCase.test || ''}`;
+    if (!selectedCases.has(key)) {
+      selectedCases.set(key, {
+        journey: journeyName,
+        name: testCase.name,
+        path: testCase.path,
+        test: testCase.test || '',
+        domains: testCase.domains || []
+      });
+    }
+  };
+
+  const addAllJourneys = () => {
+    const journeys = [...journeyCases.keys()];
+    addJourneys(journeys, true);
+    return journeys;
+  };
+
+  const findScenarioSelection = (changedPath) => {
+    const normalizedChangedPath = normalizePath(changedPath);
+    const absoluteChangedPath = getAbsoluteChangedPath(changedPath);
+    const scenariosRelativePath = normalizePath(path.relative(path.resolve(scenariosPath), absoluteChangedPath));
+
+    if (scenariosRelativePath === 'manifest.yaml') {
+      return {
+        type: 'manifest',
+        journey: '*',
+        relative_path: scenariosRelativePath
+      };
+    }
+
+    const smokeRelativePath = normalizePath(path.relative(path.resolve(scenariosPath, 'smoke'), absoluteChangedPath));
+    if (smokeRelativePath && !smokeRelativePath.startsWith('../') && smokeRelativePath !== '..' && !smokeRelativePath.includes('/') && smokeRelativePath.endsWith('.http')) {
+      return {
+        type: 'smoke',
+        journey: 'smoke',
+        relative_path: smokeRelativePath
+      };
+    }
+
+    for (const [journeyName, journey] of journeyCases.entries()) {
+      const journeyPath = path.resolve(journey.path);
+      if (!isPathInside(absoluteChangedPath, journeyPath)) {
+        continue;
+      }
+
+      const relativePath = normalizePath(path.relative(journeyPath, absoluteChangedPath));
+      if (relativePath === 'journey.yaml' || relativePath.endsWith('.http')) {
+        return {
+          type: relativePath === 'journey.yaml' ? 'journey_yaml' : 'journey_http',
+          journey: journeyName,
+          relative_path: relativePath
+        };
+      }
+    }
+
+    if (normalizedChangedPath.endsWith('/journey.yaml')) {
+      const parentName = normalizedChangedPath.split('/').slice(-2, -1)[0];
+      if (journeyCases.has(parentName)) {
+        return {
+          type: 'journey_yaml',
+          journey: parentName,
+          relative_path: 'journey.yaml'
+        };
+      }
+    }
+
+    return null;
+  };
+
+  const addCasesForDomain = (domainName) => {
+    const domainSelectedCases = [];
+    for (const [journeyName, journey] of journeyCases.entries()) {
+      for (const testCase of journey.cases) {
+        if ((testCase.domains || []).includes(domainName)) {
+          addCase(journeyName, testCase);
+          domainSelectedCases.push({
+            journey: journeyName,
+            name: testCase.name,
+            path: testCase.path,
+            test: testCase.test || ''
+          });
+        }
+      }
+    }
+    return domainSelectedCases;
+  };
+
+  const selectedPayload = (selectionMode) => ({
+    mode: selectionMode,
+    journeys: unique([...selected]),
+    cases: [...selectedCases.values()],
+    available_cases: [...journeyCases.entries()].flatMap(([journeyName, journey]) => (
+      journey.cases.map((testCase) => ({
+        journey: journeyName,
+        journey_title: journey.title,
+        name: testCase.name,
+        path: testCase.path,
+        test: testCase.test || '',
+        domains: testCase.domains || []
+      }))
+    )),
+    all_cases_journeys: unique([...allCasesJourneys]),
+    reasons,
+    unmatched_files: unmatchedFiles,
+    ignored_files: ignoredFiles
+  });
+
+  const alwaysRun = manifest.defaults.always_run || [];
+  addJourneys(alwaysRun);
+  if (alwaysRun.length > 0) {
+    reasons.push({
+      type: 'default',
+      source: 'always_run',
+      selected_journeys: alwaysRun
+    });
+  }
+
+
+  let labelRequestedFull = false;
+  for (const label of labels) {
+    const entry = manifest.labels && manifest.labels[label];
+    if (!entry) {
+      continue;
+    }
+
+    let selectedJourneys = [];
+    let selectedDomains = [];
+    let selectedLabelCases = [];
+
+    if (entry.mode === 'full') {
+      labelRequestedFull = true;
+      selectedJourneys = addAllJourneys();
+    }
+
+    if (Array.isArray(entry.journeys)) {
+      selectedJourneys.push(...entry.journeys);
+      addJourneys(entry.journeys, true);
+    }
+
+    if (Array.isArray(entry.domains)) {
+      selectedDomains = entry.domains;
+      for (const domainName of entry.domains) {
+        selectedLabelCases.push(...addCasesForDomain(domainName));
+      }
+    }
+
+    reasons.push({
+      type: 'label',
+      label,
+      mode: entry.mode || '',
+      selected_domains: selectedDomains,
+      selected_journeys: unique(selectedJourneys),
+      selected_cases: selectedLabelCases
+    });
+  }
+
+  if (labelRequestedFull) {
+    return selectedPayload('full');
+  }
+
+  const ignorePaths = Array.isArray(manifest.defaults.ignore_paths) ? manifest.defaults.ignore_paths : [];
+  const domainEntries = Object.entries(manifest.domains || {});
+  const impactedDomains = new Map();
+
+  for (const file of changedFiles) {
+    const scenarioSelections = [];
+    for (const candidate of getPathCandidates(file)) {
+      const scenarioSelection = findScenarioSelection(candidate.value);
+      if (scenarioSelection) {
+        scenarioSelections.push({
+          ...scenarioSelection,
+          field: candidate.field,
+          path: candidate.value
+        });
+      }
+    }
+
+    if (scenarioSelections.length > 0) {
+      const selectedJourneys = [];
+      for (const scenarioSelection of scenarioSelections) {
+        if (scenarioSelection.journey === '*') {
+          selectedJourneys.push(...addAllJourneys());
+        } else {
+          selectedJourneys.push(scenarioSelection.journey);
+          addJourneys([scenarioSelection.journey], true);
+        }
+      }
+
+      reasons.push({
+        type: 'changed_scenario_file',
+        file: file.path,
+        previous_file: file.previousPath || '',
+        status: file.status,
+        selected_journeys: unique(selectedJourneys),
+        matches: scenarioSelections
+      });
+      continue;
+    }
+
+    const ignoreResult = shouldIgnoreFile(file, ignorePaths);
+    if (ignoreResult.ignored) {
+      ignoredFiles.push({
+        path: file.path,
+        previousPath: file.previousPath || '',
+        status: file.status,
+        matches: ignoreResult.matches
+      });
+      continue;
+    }
+
+    const matchedDomains = [];
+    const candidatePaths = getPathCandidates(file);
+
+    for (const [domainName, domain] of domainEntries) {
+      const matches = [];
+      for (const candidate of candidatePaths) {
+        for (const pattern of domain.paths) {
+          if (matchesPath(candidate.value, pattern)) {
+            matches.push({
+              field: candidate.field,
+              path: candidate.value,
+              pattern
+            });
+          }
+        }
+      }
+
+      if (matches.length === 0) {
+        continue;
+      }
+
+      if (!impactedDomains.has(domainName)) {
+        impactedDomains.set(domainName, []);
+      }
+      impactedDomains.get(domainName).push(file.path);
+      matchedDomains.push(domainName);
+      reasons.push({
+        type: 'changed_file_domain',
+        file: file.path,
+        previous_file: file.previousPath || '',
+        status: file.status,
+        matched_domain: domainName,
+        matched_paths: unique(matches.map((match) => match.pattern)),
+        matched_file_paths: matches
+      });
+    }
+
+    if (matchedDomains.length === 0) {
+      unmatchedFiles.push(file.path);
+    }
+  }
+
+  for (const [domainName] of impactedDomains) {
+    const domainSelectedCases = addCasesForDomain(domainName);
+
+    reasons.push({
+      type: 'domain_selection',
+      domain: domainName,
+      files: unique(impactedDomains.get(domainName)),
+      selected_cases: domainSelectedCases
+    });
+  }
+
+  return selectedPayload('affected');
+}
+
+async function selectJourneys(options) {
+  const manifest = await loadManifest(options.manifestPath);
+  const changedFiles = options.changedFilesPath ? await loadChangedFiles(options.changedFilesPath) : [];
+  const labels = parseLabels(options.labelsInput || '');
+  await validateManifest(manifest, options.scenariosPath);
+  const journeyCases = await loadJourneyCases(options.scenariosPath);
+
+  return buildSelection({ manifest, changedFiles, labels, journeyCases, scenariosPath: options.scenariosPath });
+}
+
+module.exports = {
+  selectJourneys,
+  loadChangedFiles,
+  parseLabels,
+  shouldIgnoreFile,
+  matchesPath
 };
 
 
@@ -37083,10 +37955,10 @@ var __webpack_exports__ = {};
 const core = __nccwpck_require__(7484);
 const fs = (__nccwpck_require__(9896).promises);
 const path = __nccwpck_require__(6928);
-const { findJourneysYaml, parseJourneyYaml, runHttpYacTest } = __nccwpck_require__(1712);
+const { findJourneysYaml, findSmokeHttpFiles, parseJourneyYaml, runHttpYacTest } = __nccwpck_require__(1712);
 const { loadReports, buildMarkdownSummary, writeSummary } = __nccwpck_require__(3884);
 const { isTestFailed, isErrorResult } = __nccwpck_require__(7743);
-const { error } = __nccwpck_require__(4236);
+const { selectJourneys } = __nccwpck_require__(7020);
 
 const HTTPYAC_VERSION = '6.16.7';
 
@@ -37129,13 +38001,17 @@ function parseEnvInput(envInput) {
 async function main() {
   const scenariosPath = core.getInput('scenarios-path', { required: true });
   const outputDir = core.getInput('output-dir', { required: false }) || './httpyac-results';
+  const changedFilesPath = core.getInput('changed-files-path', { required: false });
+  const labelsInput = core.getInput('labels', { required: false });
+  const manifestPath = path.join(scenariosPath, 'manifest.yaml');
+  const smokePath = path.join(scenariosPath, 'smoke');
   const rawEnv = core.getInput('env', { required: true });
 
   const customEnv = parseEnvInput(rawEnv);
   
   console.log('httpYac Action - Phase 1: Test Execution');
   await fs.mkdir(outputDir, { recursive: true });
-  
+
   // Find all journey.yaml files
   console.log('\nFinding user journeys...');
   const [journeys, skippedJourneys] = await findJourneysYaml(scenariosPath);
@@ -37146,18 +38022,107 @@ async function main() {
 
   if (journeys.length === 0) {
     console.log('   No user journeys found');
-    return;
   } 
   console.log(`   Found ${journeys.length} user journey(s)`);
+
+  let selection = null;
+  let journeysToRun = journeys;
+  let smokeTests = [];
+
+  if (changedFilesPath) {
+    try {
+      await fs.access(manifestPath);
+    } catch (_err) {
+      throw new Error(`changed-files-path requires manifest.yaml at ${manifestPath}`);
+    }
+
+    selection = await selectJourneys({
+      manifestPath,
+      changedFilesPath,
+      labelsInput,
+      scenariosPath
+    });
+  } else {
+    selection = {
+      mode: 'all',
+      journeys: journeys.map((journey) => journey.name),
+      reasons: [{ type: 'mode', mode: 'all', selected_journeys: journeys.map((journey) => journey.name) }],
+      unmatched_files: []
+    };
+  }
+
+  const selectionPath = path.join(outputDir, 'selection.json');
+  await fs.writeFile(selectionPath, JSON.stringify(selection, null, 2), 'utf8');
+  console.log(`\nSelection generated: ${selectionPath}`);
+  console.log(`   Mode: ${selection.mode}`);
+  console.log(`   Selected journeys: ${selection.journeys.join(', ') || '(none)'}`);
+
+  const selectedJourneySet = new Set(selection.journeys || []);
+  const allCasesJourneySet = new Set(selection.all_cases_journeys || []);
+  const selectedCasesByJourney = new Map();
+  for (const selectedCase of selection.cases || []) {
+    if (!selectedCase || !selectedCase.journey) {
+      continue;
+    }
+    if (!selectedCasesByJourney.has(selectedCase.journey)) {
+      selectedCasesByJourney.set(selectedCase.journey, new Set());
+    }
+    selectedCasesByJourney
+      .get(selectedCase.journey)
+      .add(`${selectedCase.path || ''}\u0000${selectedCase.test || ''}`);
+  }
+  journeysToRun = journeys.filter((journey) => selectedJourneySet.has(journey.name));
+
+  if (selectedJourneySet.has('smoke')) {
+    smokeTests = await findSmokeHttpFiles(smokePath);
+    if (smokeTests.length === 0) {
+      throw new Error(`Selected smoke journey but no .http files were found in ${smokePath}`);
+    }
+  }
+
+  const knownRunnableJourneys = new Set([
+    ...journeys.map((journey) => journey.name),
+    ...(smokeTests.length > 0 ? ['smoke'] : [])
+  ]);
+  const missingJourneys = selection.journeys.filter((journey) => !knownRunnableJourneys.has(journey));
+  if (missingJourneys.length > 0) {
+    throw new Error(`Selected journey is not runnable from scenarios-path: ${missingJourneys.join(', ')}`);
+  }
+
+  if (journeysToRun.length === 0 && smokeTests.length === 0) {
+    throw new Error('Selection produced no runnable journeys');
+  }
   
   const results = [];
+  let smokeCaseIndex = 0;
+
+  for (const smokeTest of smokeTests) {
+    for (const testCase of smokeTest.config.cases) {
+      smokeCaseIndex++;
+      const outputFileName = `smoke-${smokeCaseIndex}.json`;
+      const outputPath = path.join(outputDir, outputFileName);
+      const metadataResult = await runHttpYacTest(smokeTest.path, smokeTest.config, testCase, outputPath, customEnv, HTTPYAC_VERSION);
+      results.push(metadataResult);
+    }
+  }
   
-  for (const journey of journeys) {
+  for (const journey of journeysToRun) {
     try {
       const config = await parseJourneyYaml(journey.yamlPath);
+      const selectedCaseKeys = selectedCasesByJourney.get(journey.name);
+      const casesToRun = allCasesJourneySet.has(journey.name) || !selectedCaseKeys
+        ? config.cases
+        : config.cases.filter((testCase) => {
+            return selectedCaseKeys.has(`${testCase.path || ''}\u0000${testCase.test || ''}`);
+          });
+
+      if (casesToRun.length === 0) {
+        console.log(`\nSkipping journey '${journey.name}' because no selected cases are runnable`);
+        continue;
+      }
       
       let caseIndex = 0;
-      for (const testCase of config.cases) {
+      for (const testCase of casesToRun) {
         caseIndex++;
         
         const outputFileName = `${journey.name}-${caseIndex}.json`;
@@ -37184,6 +38149,7 @@ async function main() {
   const errorCount = results.filter(isErrorResult).length;
   const metadataData = {
     timestamp: new Date().toISOString(),
+    selection,
     summary: {
       total: results.length,
       successful: results.filter(r => r.success).length,
@@ -37211,7 +38177,7 @@ async function main() {
     return;
   }
 
-  const markdown = buildMarkdownSummary(reports);
+  const markdown = buildMarkdownSummary(reports, selection);
   const summaryPath = await writeSummary(markdown, outputDir);
 
   console.log(`   Summary generated: ${summaryPath}`);
